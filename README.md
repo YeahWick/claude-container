@@ -10,54 +10,73 @@ Run Claude Code CLI in a Linux container on macOS using [Apple's container tool]
 
 ## Setup
 
-Install the container tool if you haven't already:
+1. Install the container tool and start the service:
+   ```bash
+   container system start
+   ```
 
-```bash
-# Download and install from releases page, then start the service
-container system start
-```
+2. Create your API key file:
+   ```bash
+   echo 'your_anthropic_api_key' > ~/.anthropic_key
+   ```
+
+3. Build the container:
+   ```bash
+   container build -t claude-code .
+   ```
 
 ## Quick Start
 
-### Build the container
+The easiest way to run Claude Code is with the launcher script:
 
 ```bash
-container build -t claude-code .
+# From your project directory
+/path/to/claude-container/run.sh
 ```
 
-### Run interactively
-
+Or create an alias:
 ```bash
-container run -it \
-  -e ANTHROPIC_API_KEY=your_api_key \
-  -v /path/to/your/project:/home/claude/workspace \
-  claude-code
+alias claude-container='/path/to/claude-container/run.sh'
 ```
+
+Then just run from any project:
+```bash
+cd ~/my-project
+claude-container
+```
+
+## What Gets Mounted
+
+The launcher script automatically mounts:
+- **Current directory** → `/home/claude/workspace` (your project files)
+- **~/.anthropic_key** → `/home/claude/.anthropic_key` (API authentication)
 
 ## Usage Examples
 
 ### Start interactive session
 ```bash
-container run -it \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  -v $(pwd):/home/claude/workspace \
-  claude-code
+./run.sh
 ```
 
 ### Run with a specific prompt
 ```bash
-container run -it \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  -v $(pwd):/home/claude/workspace \
-  claude-code -p "explain this codebase"
+./run.sh -p "explain this codebase"
 ```
 
 ### Continue a previous session
 ```bash
+./run.sh --continue
+```
+
+## Manual Usage
+
+If you prefer to run the container directly:
+
+```bash
 container run -it \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -v $(pwd):/home/claude/workspace \
-  claude-code --continue
+  -v ~/.anthropic_key:/home/claude/.anthropic_key:ro \
+  claude-code
 ```
 
 ## Container Management
@@ -71,17 +90,16 @@ container ls -a
 
 # List images
 container images ls
+
+# Rebuild the image
+container build -t claude-code .
 ```
 
 ## Environment Variables
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `ANTHROPIC_API_KEY` | Your Anthropic API key | Yes |
-
-## Volume Mounts
-
-Mount your project directory to `/home/claude/workspace` for Claude Code to access your files.
+| `ANTHROPIC_API_KEY` | Your Anthropic API key (can also use ~/.anthropic_key file) | Yes |
 
 ## Building for Multiple Architectures
 

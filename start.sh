@@ -16,10 +16,16 @@ echo -e "${BLUE}   Claude Code Container Session${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
+# Load API key from file if not set via environment
+KEY_FILE="$HOME/.anthropic_key"
+if [ -z "$ANTHROPIC_API_KEY" ] && [ -f "$KEY_FILE" ]; then
+    export ANTHROPIC_API_KEY="$(cat "$KEY_FILE")"
+fi
+
 # Check for API key
 if [ -z "$ANTHROPIC_API_KEY" ]; then
     echo -e "${YELLOW}Warning: ANTHROPIC_API_KEY is not set${NC}"
-    echo -e "${YELLOW}Set it with: -e ANTHROPIC_API_KEY=your_key${NC}"
+    echo -e "${YELLOW}Mount your key file or set -e ANTHROPIC_API_KEY=your_key${NC}"
     echo ""
 fi
 
