@@ -5,5 +5,5 @@
 # Workspace directory (contains mounted projects)
 workspace/
 
-# Docker
-.docker/
+# Container build artifacts
+.container/

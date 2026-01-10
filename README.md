@@ -1,43 +1,44 @@
 # claude-container
 
-Docker container setup to run Claude Code CLI with your projects.
+Run Claude Code CLI in a Linux container on macOS using [Apple's container tool](https://github.com/apple/container).
+
+## Requirements
+
+- Mac with Apple Silicon
+- macOS 26 or later
+- [Apple container tool](https://github.com/apple/container/releases) installed
+
+## Setup
+
+Install the container tool if you haven't already:
+
+```bash
+# Download and install from releases page, then start the service
+container system start
+```
 
 ## Quick Start
 
 ### Build the container
 
 ```bash
-docker build -t claude-code .
+container build -t claude-code .
 ```
 
 ### Run interactively
 
 ```bash
-docker run -it --rm \
+container run -it \
   -e ANTHROPIC_API_KEY=your_api_key \
   -v /path/to/your/project:/home/claude/workspace \
   claude-code
 ```
 
-### Using Docker Compose
-
-1. Create a `.env` file with your API key:
-   ```bash
-   echo "ANTHROPIC_API_KEY=your_api_key" > .env
-   ```
-
-2. Place your project in the `workspace/` directory or modify the volume mount in `docker-compose.yml`
-
-3. Run:
-   ```bash
-   docker compose run --rm claude-code
-   ```
-
 ## Usage Examples
 
 ### Start interactive session
 ```bash
-docker run -it --rm \
+container run -it \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -v $(pwd):/home/claude/workspace \
   claude-code
@@ -45,7 +46,7 @@ docker run -it --rm \
 
 ### Run with a specific prompt
 ```bash
-docker run -it --rm \
+container run -it \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -v $(pwd):/home/claude/workspace \
   claude-code -p "explain this codebase"
@@ -53,10 +54,23 @@ docker run -it --rm \
 
 ### Continue a previous session
 ```bash
-docker run -it --rm \
+container run -it \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -v $(pwd):/home/claude/workspace \
   claude-code --continue
+```
+
+## Container Management
+
+```bash
+# List running containers
+container ls
+
+# List all containers
+container ls -a
+
+# List images
+container images ls
 ```
 
 ## Environment Variables
@@ -68,3 +82,9 @@ docker run -it --rm \
 ## Volume Mounts
 
 Mount your project directory to `/home/claude/workspace` for Claude Code to access your files.
+
+## Building for Multiple Architectures
+
+```bash
+container build --arch amd64,arm64 -t claude-code .
+```
