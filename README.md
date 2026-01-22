@@ -175,6 +175,9 @@ container run -it \
 ## Container Management
 
 ```bash
+# Show image name for current project
+/path/to/claude-container/image-name.sh
+
 # List running containers
 container ls
 
