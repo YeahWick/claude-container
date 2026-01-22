@@ -6,13 +6,15 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE_NAME="claude-code"
+BASE_IMAGE="claude-code"
 KEY_FILE="$HOME/.anthropic_key"
+PROJECT_SETUP=".claude-container/setup.sh"
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Check if container tool is available
@@ -22,10 +24,10 @@ if ! command -v container &> /dev/null; then
     exit 1
 fi
 
-# Check if image exists, build if not
-if ! container images ls 2>/dev/null | grep -q "$IMAGE_NAME"; then
-    echo -e "${YELLOW}Image '$IMAGE_NAME' not found. Building...${NC}"
-    container build -t "$IMAGE_NAME" "$SCRIPT_DIR"
+# Ensure base image exists
+if ! container images ls 2>/dev/null | grep -q "$BASE_IMAGE"; then
+    echo -e "${YELLOW}Base image '$BASE_IMAGE' not found. Building...${NC}"
+    container build -t "$BASE_IMAGE" "$SCRIPT_DIR"
 fi
 
 # Check for API key file
@@ -35,7 +37,58 @@ if [ ! -f "$KEY_FILE" ]; then
     exit 1
 fi
 
+# Determine which image to use
+IMAGE_NAME="$BASE_IMAGE"
+
+# Check if project has a custom setup script
+if [ -f "$PROJECT_SETUP" ]; then
+    # Generate a unique image name based on the project directory
+    PROJECT_NAME=$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
+    PROJECT_IMAGE="claude-code-${PROJECT_NAME}"
+
+    # Calculate checksum of setup script to detect changes
+    SETUP_CHECKSUM=$(sha256sum "$PROJECT_SETUP" | cut -c1-12)
+    PROJECT_IMAGE_TAG="${PROJECT_IMAGE}:${SETUP_CHECKSUM}"
+
+    # Check if project-specific image with this checksum exists
+    if ! container images ls 2>/dev/null | grep -q "$PROJECT_IMAGE.*$SETUP_CHECKSUM"; then
+        echo -e "${BLUE}Project setup script detected: $PROJECT_SETUP${NC}"
+        echo -e "${YELLOW}Building project-specific image...${NC}"
+
+        # Create a temporary build context
+        BUILD_DIR=$(mktemp -d)
+        trap "rm -rf $BUILD_DIR" EXIT
+
+        # Copy the setup script
+        cp "$PROJECT_SETUP" "$BUILD_DIR/setup.sh"
+
+        # Generate a Containerfile that extends the base image
+        cat > "$BUILD_DIR/Containerfile" <<EOF
+FROM $BASE_IMAGE
+
+# Copy and run project-specific setup
+USER root
+COPY setup.sh /tmp/project-setup.sh
+RUN chmod +x /tmp/project-setup.sh && /tmp/project-setup.sh && rm /tmp/project-setup.sh
+
+# Switch back to claude user
+USER claude
+WORKDIR /home/claude/workspace
+ENTRYPOINT ["/home/claude/start.sh"]
+EOF
+
+        # Build the project-specific image
+        container build -t "$PROJECT_IMAGE_TAG" "$BUILD_DIR"
+        echo -e "${GREEN}Project image built successfully!${NC}"
+    else
+        echo -e "${GREEN}Using cached project image${NC}"
+    fi
+
+    IMAGE_NAME="$PROJECT_IMAGE_TAG"
+fi
+
 echo -e "${GREEN}Starting Claude Code container...${NC}"
+echo -e "${GREEN}Image:${NC} $IMAGE_NAME"
 echo -e "${GREEN}Workspace:${NC} $(pwd)"
 echo ""
 

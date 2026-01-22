@@ -51,6 +51,53 @@ The launcher script automatically mounts:
 - **Current directory** → `/home/claude/workspace` (your project files)
 - **~/.anthropic_key** → `/home/claude/.anthropic_key` (API authentication)
 
+## Project-Specific Setup
+
+You can create a project-specific setup script that installs additional tooling into a cached image layer. This is useful for installing:
+- Language runtimes (Python, Go, Rust, Java, etc.)
+- Build tools and linters
+- Project-specific dependencies
+
+### How It Works
+
+1. Create a `.claude-container/setup.sh` script in your project root
+2. When you run `run.sh`, it detects this script and builds a project-specific image
+3. The setup runs **once** during image build, not on every container start
+4. Changes to the setup script trigger a rebuild (tracked via checksum)
+
+### Example Setup Script
+
+Create `.claude-container/setup.sh` in your project:
+
+```bash
+#!/bin/bash
+# Runs as root during image build
+set -e
+
+apt-get update
+
+# Install Python
+apt-get install -y python3 python3-pip python3-venv
+
+# Install global tools
+npm install -g typescript prettier eslint
+
+# Clean up
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+echo "Setup complete!"
+```
+
+See `examples/.claude-container/setup.sh` for a full template with more options.
+
+### Image Naming
+
+Project-specific images are named `claude-code-<project>:<checksum>`:
+- `claude-code-my-app:a1b2c3d4e5f6` - Built from `my-app/.claude-container/setup.sh`
+
+The checksum ensures the image is rebuilt when the setup script changes.
+
 ## Usage Examples
 
 ### Start interactive session
