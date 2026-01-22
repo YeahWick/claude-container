@@ -132,8 +132,10 @@ To force a rebuild even when files haven't changed:
 
 ### Image Naming
 
-Project-specific images are named `claude-code-<project>:<checksum>`:
-- `claude-code-my-app:a1b2c3d4e5f6` - Built from `my-app/.claude-container/`
+Project-specific images are named `claude-code-<project>-<path-hash>:<checksum>`:
+- `claude-code-my-app-a1b2c3d4:e5f6g7h8i9j0` - Built from `my-app/.claude-container/`
+
+The path hash ensures projects with the same folder name in different locations (e.g., `~/work/my-app` and `~/personal/my-app`) don't collide.
 
 Old images are automatically cleaned up when a new version is built.
 

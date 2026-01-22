@@ -97,9 +97,11 @@ IMAGE_NAME="$BASE_IMAGE"
 
 # Check if project has custom setup
 if [ -d "$PROJECT_DIR" ] && { [ -f "$PROJECT_DIR/setup.sh" ] || [ -f "$PROJECT_DIR/Containerfile" ]; }; then
-    # Generate a unique image name based on the project directory
+    # Generate a unique image name based on project name + path hash
+    # This ensures ~/work/my-app and ~/personal/my-app don't collide
     PROJECT_NAME=$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
-    PROJECT_IMAGE="claude-code-${PROJECT_NAME}"
+    PATH_HASH=$(echo -n "$(pwd)" | sha256sum | cut -c1-8)
+    PROJECT_IMAGE="claude-code-${PROJECT_NAME}-${PATH_HASH}"
 
     # Calculate checksum of all setup files
     SETUP_CHECKSUM=$(calculate_checksum)
