@@ -1,0 +1,34 @@
+# Claude Code Proxy Configuration
+#
+# This file configures the proxy server behavior.
+# All settings can also be overridden via environment variables
+# prefixed with PROXY_ (e.g., PROXY_GITHUB_TOKEN).
+
+# Server settings
+debug: false
+
+# GitHub tool configuration
+github_token: ""  # Set via PROXY_GITHUB_TOKEN environment variable
+
+# Branches that cannot be pushed to
+# Default: ["main", "master"]
+github_blocked_branches:
+  - main
+  - master
+
+# Repository access control (optional)
+# If allowed_repos is empty, all repos are allowed (except blocked ones)
+github_allowed_repos: []
+# Example:
+#   - github.com/myorg/repo1
+#   - github.com/myorg/repo2
+
+# Repositories that are blocked (only used if allowed_repos is empty)
+github_blocked_repos: []
+# Example:
+#   - github.com/company/production-config
+
+# Tool access control (optional)
+# If allowed_tools is empty, all tools are allowed (except blocked ones)
+allowed_tools: []
+blocked_tools: []

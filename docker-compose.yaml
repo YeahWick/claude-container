@@ -1,0 +1,68 @@
+# Docker Compose for Claude Code with Proxy
+#
+# This configuration runs Claude Code container alongside a proxy container
+# that provides controlled access to external services with credential management
+# and configurable restrictions (e.g., branch protection for GitHub).
+#
+# Usage:
+#   docker-compose up -d           # Start both containers
+#   docker-compose exec claude bash # Access Claude Code container
+#   docker-compose logs proxy       # View proxy logs
+#   docker-compose down             # Stop all containers
+#
+# Environment variables can be set in a .env file or passed directly.
+
+services:
+  # Proxy container - provides controlled access to external services
+  proxy:
+    build:
+      context: ./proxy
+      dockerfile: Containerfile
+    container_name: claude-proxy
+    restart: unless-stopped
+    environment:
+      # GitHub configuration
+      - PROXY_GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - PROXY_GITHUB_BLOCKED_BRANCHES=${BLOCKED_BRANCHES:-["main","master"]}
+      # Debug mode (set to true for verbose logging)
+      - PROXY_DEBUG=${PROXY_DEBUG:-false}
+    volumes:
+      # Optional: mount custom config
+      - ./proxy/config.yaml:/app/config.yaml:ro
+    networks:
+      - claude-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Claude Code container
+  claude:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: claude-code
+    stdin_open: true
+    tty: true
+    environment:
+      # Proxy configuration
+      - PROXY_HOST=proxy
+      - PROXY_PORT=8080
+      # Workspace path
+      - WORKSPACE=/home/claude/workspace
+    volumes:
+      # Mount current directory as workspace
+      - ${PROJECT_DIR:-.}:/home/claude/workspace
+      # Mount Anthropic API key (read-only)
+      - ${ANTHROPIC_KEY_FILE:-~/.anthropic_key}:/home/claude/.anthropic_key:ro
+    networks:
+      - claude-network
+    depends_on:
+      proxy:
+        condition: service_healthy
+
+networks:
+  claude-network:
+    driver: bridge

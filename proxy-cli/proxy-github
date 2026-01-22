@@ -1,0 +1,674 @@
+#!/bin/bash
+# Claude Code Proxy - GitHub CLI
+# Git operations through the proxy with branch protection
+
+set -e
+
+# Configuration
+PROXY_HOST="${PROXY_HOST:-proxy}"
+PROXY_PORT="${PROXY_PORT:-8080}"
+PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
+WORKSPACE="${WORKSPACE:-/home/claude/workspace}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Helper functions
+print_error() {
+    echo -e "${RED}Error: $1${NC}" >&2
+}
+
+print_success() {
+    echo -e "${GREEN}$1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}$1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}$1${NC}"
+}
+
+# Check if proxy is available
+check_proxy() {
+    if ! curl -s --connect-timeout 2 "${PROXY_URL}/health" > /dev/null 2>&1; then
+        print_error "Proxy server is not available at ${PROXY_URL}"
+        echo "Make sure the proxy container is running."
+        exit 1
+    fi
+}
+
+# Make API request
+api_get() {
+    local endpoint="$1"
+    curl -s -X GET -H "Content-Type: application/json" "${PROXY_URL}${endpoint}"
+}
+
+api_post() {
+    local endpoint="$1"
+    local data="$2"
+    curl -s -X POST -H "Content-Type: application/json" -d "$data" "${PROXY_URL}${endpoint}"
+}
+
+# JSON helper
+json_value() {
+    local json="$1"
+    local key="$2"
+    echo "$json" | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/.*: *"\([^"]*\)".*/\1/' | head -1
+}
+
+json_bool() {
+    local json="$1"
+    local key="$2"
+    echo "$json" | grep -o "\"${key}\"[[:space:]]*:[[:space:]]*[a-z]*" | sed 's/.*: *//' | head -1
+}
+
+# Show help
+show_help() {
+    cat << EOF
+${CYAN}Claude Code Proxy - GitHub CLI${NC}
+
+Usage: proxy-github <command> [options]
+
+${YELLOW}Commands:${NC}
+  push [remote] <branch>     Push to remote branch (with protection)
+  pull [remote] [branch]     Pull from remote
+  fetch [remote] [branch]    Fetch from remote
+  clone <url> [dest]         Clone a repository
+  status                     Show git status
+  branches                   List branches
+  remotes                    List remotes
+  blocked                    Show blocked branches
+  check <branch>             Check if push to branch is allowed
+  help                       Show this help
+
+${YELLOW}Push Options:${NC}
+  -u, --set-upstream         Set upstream tracking branch
+  -f, --force                Force push (uses --force-with-lease)
+
+${YELLOW}Pull Options:${NC}
+  -r, --rebase               Use rebase instead of merge
+
+${YELLOW}Fetch Options:${NC}
+  -a, --all                  Fetch all remotes
+  -p, --prune                Prune deleted remote branches
+
+${YELLOW}Clone Options:${NC}
+  -b, --branch <name>        Clone specific branch
+  -d, --depth <n>            Create shallow clone
+
+${YELLOW}Environment Variables:${NC}
+  PROXY_HOST                 Proxy hostname (default: proxy)
+  PROXY_PORT                 Proxy port (default: 8080)
+  WORKSPACE                  Repository path (default: /home/claude/workspace)
+
+${YELLOW}Examples:${NC}
+  proxy-github push origin feature-branch
+  proxy-github push -u origin new-feature
+  proxy-github pull
+  proxy-github pull --rebase origin main
+  proxy-github clone https://github.com/user/repo
+  proxy-github clone -b develop -d 1 https://github.com/user/repo myrepo
+  proxy-github status
+  proxy-github check main
+
+${YELLOW}Branch Protection:${NC}
+  The proxy blocks pushes to protected branches (default: main, master).
+  Use 'proxy-github blocked' to see the list of protected branches.
+  Create feature branches and use pull requests instead.
+EOF
+}
+
+# Get git status
+cmd_status() {
+    check_proxy
+    local response
+    response=$(api_get "/github/status?repo_path=${WORKSPACE}")
+
+    if echo "$response" | grep -q '"error"'; then
+        print_error "$(json_value "$response" "detail")"
+        exit 1
+    fi
+
+    if command -v jq &> /dev/null; then
+        local branch clean blocked
+        branch=$(echo "$response" | jq -r '.branch')
+        clean=$(echo "$response" | jq -r '.clean')
+        blocked=$(echo "$response" | jq -r '.is_blocked_branch')
+
+        echo -e "On branch ${CYAN}${branch}${NC}"
+
+        if [ "$blocked" = "true" ]; then
+            print_warning "⚠ This is a protected branch - pushes are blocked"
+        fi
+
+        if [ "$clean" = "true" ]; then
+            print_success "Working tree clean"
+        else
+            echo
+            local staged modified untracked
+            staged=$(echo "$response" | jq -r '.files.staged | length')
+            modified=$(echo "$response" | jq -r '.files.modified | length')
+            untracked=$(echo "$response" | jq -r '.files.untracked | length')
+
+            if [ "$staged" -gt 0 ]; then
+                echo -e "${GREEN}Changes to be committed:${NC}"
+                echo "$response" | jq -r '.files.staged[] | "  \(.status) \(.file)"'
+                echo
+            fi
+
+            if [ "$modified" -gt 0 ]; then
+                echo -e "${RED}Changes not staged for commit:${NC}"
+                echo "$response" | jq -r '.files.modified[] | "  M \(.)"'
+                echo
+            fi
+
+            if [ "$untracked" -gt 0 ]; then
+                echo -e "${YELLOW}Untracked files:${NC}"
+                echo "$response" | jq -r '.files.untracked[] | "  \(.)"'
+            fi
+        fi
+    else
+        echo "$response"
+    fi
+}
+
+# List branches
+cmd_branches() {
+    check_proxy
+    local all_flag=""
+    [ "$1" = "-a" ] || [ "$1" = "--all" ] && all_flag="&all=true"
+
+    local response
+    response=$(api_get "/github/branches?repo_path=${WORKSPACE}${all_flag}")
+
+    if command -v jq &> /dev/null; then
+        echo -e "${CYAN}Branches:${NC}"
+        echo "$response" | jq -r '.branches[] | (if .current then "* " else "  " end) + .name + (if .blocked then " (protected)" else "" end)'
+        echo
+        echo -e "${YELLOW}Protected branches:${NC} $(echo "$response" | jq -r '.blocked_branches | join(", ")')"
+    else
+        echo "$response"
+    fi
+}
+
+# List remotes
+cmd_remotes() {
+    check_proxy
+    local response
+    response=$(api_get "/github/remotes?repo_path=${WORKSPACE}")
+
+    if command -v jq &> /dev/null; then
+        echo -e "${CYAN}Remotes:${NC}"
+        echo "$response" | jq -r '.remotes[] | "\(.name)\t\(.urls.fetch // .urls.push // "no url")"'
+    else
+        echo "$response"
+    fi
+}
+
+# Show blocked branches
+cmd_blocked() {
+    check_proxy
+    local response
+    response=$(api_get "/github/blocked-branches")
+
+    if command -v jq &> /dev/null; then
+        echo -e "${YELLOW}Protected branches (pushes blocked):${NC}"
+        echo "$response" | jq -r '.blocked_branches[]' | while read -r branch; do
+            echo "  - $branch"
+        done
+        echo
+        echo "These branches cannot be pushed to directly."
+        echo "Create a feature branch and submit a pull request instead."
+    else
+        echo "$response"
+    fi
+}
+
+# Check if push is allowed
+cmd_check() {
+    local branch="$1"
+
+    if [ -z "$branch" ]; then
+        print_error "Branch name required"
+        echo "Usage: proxy-github check <branch>"
+        exit 1
+    fi
+
+    check_proxy
+    local response
+    response=$(api_post "/github/check-push" "{\"branch\": \"${branch}\"}")
+
+    if command -v jq &> /dev/null; then
+        local allowed
+        allowed=$(echo "$response" | jq -r '.allowed')
+
+        if [ "$allowed" = "true" ]; then
+            print_success "Push to '${branch}' is allowed"
+        else
+            print_error "Push to '${branch}' is blocked"
+            echo "$response" | jq -r '.reason // "Branch is protected"'
+        fi
+    else
+        echo "$response"
+    fi
+}
+
+# Push command
+cmd_push() {
+    local remote="origin"
+    local branch=""
+    local set_upstream=false
+    local force=false
+
+    # Parse arguments
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -u|--set-upstream)
+                set_upstream=true
+                shift
+                ;;
+            -f|--force)
+                force=true
+                shift
+                ;;
+            *)
+                if [ -z "$branch" ]; then
+                    # Could be remote or branch
+                    if [ $# -gt 1 ] && [[ ! "$2" =~ ^- ]]; then
+                        remote="$1"
+                        branch="$2"
+                        shift 2
+                    else
+                        branch="$1"
+                        shift
+                    fi
+                else
+                    shift
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$branch" ]; then
+        # Get current branch
+        branch=$(git -C "$WORKSPACE" branch --show-current 2>/dev/null || echo "")
+        if [ -z "$branch" ]; then
+            print_error "Could not determine current branch. Please specify a branch."
+            exit 1
+        fi
+        print_info "Pushing current branch: ${branch}"
+    fi
+
+    check_proxy
+
+    # Build request
+    local data
+    data=$(cat << EOF
+{
+    "remote": "${remote}",
+    "branch": "${branch}",
+    "force": ${force},
+    "set_upstream": ${set_upstream},
+    "repo_path": "${WORKSPACE}"
+}
+EOF
+)
+
+    print_info "Pushing to ${remote}/${branch}..."
+
+    local response
+    response=$(api_post "/github/push" "$data")
+
+    if echo "$response" | grep -q '"success": *true'; then
+        print_success "Successfully pushed to ${remote}/${branch}"
+        if command -v jq &> /dev/null; then
+            local output
+            output=$(echo "$response" | jq -r '.data.output // ""')
+            [ -n "$output" ] && echo "$output"
+        fi
+    else
+        if echo "$response" | grep -q "BRANCH_PROTECTED"; then
+            print_error "Cannot push to protected branch '${branch}'"
+            echo
+            print_warning "Protected branches: $(api_get "/github/blocked-branches" | jq -r '.blocked_branches | join(", ")')"
+            echo
+            echo "Suggestion: Create a feature branch and submit a pull request instead."
+            echo "  git checkout -b feature/my-change"
+            echo "  proxy-github push origin feature/my-change"
+        else
+            print_error "Push failed"
+            if command -v jq &> /dev/null; then
+                echo "$response" | jq -r '.detail // .message // .'
+            else
+                echo "$response"
+            fi
+        fi
+        exit 1
+    fi
+}
+
+# Pull command
+cmd_pull() {
+    local remote="origin"
+    local branch=""
+    local rebase=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -r|--rebase)
+                rebase=true
+                shift
+                ;;
+            *)
+                if [ -z "$branch" ]; then
+                    if [ $# -gt 1 ] && [[ ! "$2" =~ ^- ]]; then
+                        remote="$1"
+                        branch="$2"
+                        shift 2
+                    else
+                        branch="$1"
+                        shift
+                    fi
+                else
+                    shift
+                fi
+                ;;
+        esac
+    done
+
+    check_proxy
+
+    local data
+    data=$(cat << EOF
+{
+    "remote": "${remote}",
+    "branch": $([ -n "$branch" ] && echo "\"${branch}\"" || echo "null"),
+    "rebase": ${rebase},
+    "repo_path": "${WORKSPACE}"
+}
+EOF
+)
+
+    print_info "Pulling from ${remote}..."
+
+    local response
+    response=$(api_post "/github/pull" "$data")
+
+    if echo "$response" | grep -q '"success": *true'; then
+        print_success "Pull completed successfully"
+        if command -v jq &> /dev/null; then
+            echo "$response" | jq -r '.data.output // ""'
+        fi
+    else
+        print_error "Pull failed"
+        if command -v jq &> /dev/null; then
+            echo "$response" | jq -r '.detail // .message // .'
+        else
+            echo "$response"
+        fi
+        exit 1
+    fi
+}
+
+# Fetch command
+cmd_fetch() {
+    local remote="origin"
+    local branch=""
+    local all_remotes=false
+    local prune=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -a|--all)
+                all_remotes=true
+                shift
+                ;;
+            -p|--prune)
+                prune=true
+                shift
+                ;;
+            *)
+                if [ -z "$branch" ]; then
+                    if [ $# -gt 1 ] && [[ ! "$2" =~ ^- ]]; then
+                        remote="$1"
+                        branch="$2"
+                        shift 2
+                    else
+                        if [[ "$1" =~ ^[a-zA-Z] ]]; then
+                            remote="$1"
+                        fi
+                        shift
+                    fi
+                else
+                    shift
+                fi
+                ;;
+        esac
+    done
+
+    check_proxy
+
+    local data
+    data=$(cat << EOF
+{
+    "remote": "${remote}",
+    "branch": $([ -n "$branch" ] && echo "\"${branch}\"" || echo "null"),
+    "all_remotes": ${all_remotes},
+    "prune": ${prune},
+    "repo_path": "${WORKSPACE}"
+}
+EOF
+)
+
+    print_info "Fetching..."
+
+    local response
+    response=$(api_post "/github/fetch" "$data")
+
+    if echo "$response" | grep -q '"success": *true'; then
+        print_success "Fetch completed successfully"
+        if command -v jq &> /dev/null; then
+            local output
+            output=$(echo "$response" | jq -r '.data.output // ""')
+            [ -n "$output" ] && echo "$output"
+        fi
+    else
+        print_error "Fetch failed"
+        if command -v jq &> /dev/null; then
+            echo "$response" | jq -r '.detail // .message // .'
+        else
+            echo "$response"
+        fi
+        exit 1
+    fi
+}
+
+# Clone command
+cmd_clone() {
+    local url=""
+    local destination=""
+    local branch=""
+    local depth=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -b|--branch)
+                branch="$2"
+                shift 2
+                ;;
+            -d|--depth)
+                depth="$2"
+                shift 2
+                ;;
+            *)
+                if [ -z "$url" ]; then
+                    url="$1"
+                elif [ -z "$destination" ]; then
+                    destination="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$url" ]; then
+        print_error "Repository URL required"
+        echo "Usage: proxy-github clone <url> [destination] [-b branch] [-d depth]"
+        exit 1
+    fi
+
+    check_proxy
+
+    local data
+    data=$(cat << EOF
+{
+    "url": "${url}",
+    "destination": $([ -n "$destination" ] && echo "\"${destination}\"" || echo "null"),
+    "branch": $([ -n "$branch" ] && echo "\"${branch}\"" || echo "null"),
+    "depth": $([ -n "$depth" ] && echo "${depth}" || echo "null")
+}
+EOF
+)
+
+    print_info "Cloning ${url}..."
+
+    local response
+    response=$(api_post "/github/clone" "$data")
+
+    if echo "$response" | grep -q '"success": *true'; then
+        print_success "Successfully cloned repository"
+        if command -v jq &> /dev/null; then
+            echo "$response" | jq -r '"Cloned to: \(.data.destination // "current directory")"'
+        fi
+    else
+        print_error "Clone failed"
+        if command -v jq &> /dev/null; then
+            echo "$response" | jq -r '.detail // .message // .'
+        else
+            echo "$response"
+        fi
+        exit 1
+    fi
+}
+
+# Branch command
+cmd_branch() {
+    local name=""
+    local delete=false
+    local checkout=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -d|--delete)
+                delete=true
+                shift
+                ;;
+            -c|--checkout)
+                checkout=true
+                shift
+                ;;
+            *)
+                name="$1"
+                shift
+                ;;
+        esac
+    done
+
+    check_proxy
+
+    if [ -z "$name" ] && [ "$delete" = "false" ]; then
+        # List branches
+        cmd_branches
+        return
+    fi
+
+    local data
+    data=$(cat << EOF
+{
+    "name": $([ -n "$name" ] && echo "\"${name}\"" || echo "null"),
+    "delete": ${delete},
+    "checkout": ${checkout},
+    "repo_path": "${WORKSPACE}"
+}
+EOF
+)
+
+    local response
+    response=$(api_post "/github/branch" "$data")
+
+    if echo "$response" | grep -q '"success": *true'; then
+        if command -v jq &> /dev/null; then
+            print_success "$(echo "$response" | jq -r '.message')"
+        else
+            print_success "Branch operation completed"
+        fi
+    else
+        print_error "Branch operation failed"
+        if command -v jq &> /dev/null; then
+            echo "$response" | jq -r '.detail // .message // .'
+        else
+            echo "$response"
+        fi
+        exit 1
+    fi
+}
+
+# Main command handler
+main() {
+    case "${1:-help}" in
+        push)
+            shift
+            cmd_push "$@"
+            ;;
+        pull)
+            shift
+            cmd_pull "$@"
+            ;;
+        fetch)
+            shift
+            cmd_fetch "$@"
+            ;;
+        clone)
+            shift
+            cmd_clone "$@"
+            ;;
+        status|st)
+            cmd_status
+            ;;
+        branches|branch|br)
+            shift
+            if [ "$1" = "-d" ] || [ "$1" = "--delete" ] || [ "$1" = "-c" ] || [ "$1" = "--checkout" ] || [ -n "$1" ]; then
+                cmd_branch "$@"
+            else
+                cmd_branches "$@"
+            fi
+            ;;
+        remotes|remote)
+            cmd_remotes
+            ;;
+        blocked|protected)
+            cmd_blocked
+            ;;
+        check)
+            shift
+            cmd_check "$@"
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        *)
+            print_error "Unknown command: $1"
+            echo "Run 'proxy-github help' for usage information"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

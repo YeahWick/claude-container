@@ -233,3 +233,149 @@ container build -t claude-code .
 ```bash
 container build --arch amd64,arm64 -t claude-code .
 ```
+
+## Proxy Container (Advanced)
+
+The proxy container provides controlled access to external services with credential management and configurable restrictions. This is useful for:
+
+- **Branch protection**: Block pushes to main/master branches
+- **Credential injection**: Automatically inject GitHub tokens
+- **Access control**: Restrict which repositories can be accessed
+- **Extensibility**: Add new tools with their own access controls
+
+### Quick Start with Proxy
+
+1. Create a `.env` file with your configuration:
+   ```bash
+   cp .env.example .env
+   # Edit .env and add your GITHUB_TOKEN
+   ```
+
+2. Start with proxy using docker-compose:
+   ```bash
+   ./run-with-proxy.sh
+   # Or use the alias after sourcing aliases.sh:
+   claude-proxy
+   ```
+
+### Proxy CLI Tools
+
+Inside the Claude Code container, these tools are available:
+
+```bash
+# List all available proxy tools
+proxy-tools
+
+# GitHub operations (with branch protection)
+proxy-github help              # Show all commands
+proxy-github status            # Git status
+proxy-github push origin branch # Push (blocks protected branches)
+proxy-github pull              # Pull from remote
+proxy-github clone <url>       # Clone repository
+proxy-github branches          # List branches
+proxy-github blocked           # Show protected branches
+proxy-github check <branch>    # Check if push is allowed
+
+# General proxy CLI
+proxy-cli tools                # List server-side tools
+proxy-cli tool github          # Get tool details
+proxy-cli health               # Check proxy health
+```
+
+### Configuration
+
+Edit `proxy/config.yaml` or use environment variables:
+
+```yaml
+# Branches blocked from push
+github_blocked_branches:
+  - main
+  - master
+
+# Repository access control (optional)
+github_allowed_repos: []    # Empty = all allowed
+github_blocked_repos:
+  - github.com/company/production
+```
+
+Environment variables (in `.env`):
+```bash
+GITHUB_TOKEN=your_token_here
+BLOCKED_BRANCHES=["main","master","production"]
+```
+
+### Adding New Tools
+
+Tools are Python modules in `proxy/tools/`. Each tool should:
+
+1. Create a file in `proxy/tools/` (e.g., `mytool.py`)
+2. Define a FastAPI router and `TOOL_INFO` dict
+3. Optionally create a CLI wrapper in `proxy-cli/`
+
+Example tool structure:
+```python
+from fastapi import APIRouter
+
+TOOL_INFO = {
+    "name": "mytool",
+    "description": "My custom tool",
+    "version": "1.0.0",
+}
+
+router = APIRouter()
+
+@router.get("/")
+async def info():
+    return TOOL_INFO
+
+@router.post("/action")
+async def do_action(param: str):
+    # Tool logic here
+    return {"success": True}
+```
+
+### Docker Compose Commands
+
+```bash
+# Start both containers
+./run-with-proxy.sh
+# Or: docker-compose up
+
+# Start in background
+./run-with-proxy.sh --detach
+
+# View proxy logs
+./run-with-proxy.sh --logs
+
+# Open shell in running container
+./run-with-proxy.sh --shell
+
+# Stop containers
+./run-with-proxy.sh --stop
+# Or: docker-compose down
+
+# Rebuild containers
+./run-with-proxy.sh --build
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Docker Network                          │
+│                                                             │
+│  ┌─────────────────────┐      ┌─────────────────────────┐  │
+│  │   Claude Code       │      │      Proxy Container     │  │
+│  │   Container         │ HTTP │                          │  │
+│  │                     │─────▶│  /github/push            │  │
+│  │  proxy-github push  │      │  /github/pull            │  │
+│  │  proxy-cli tools    │      │  /github/clone           │  │
+│  │                     │      │  /tools                  │  │
+│  │  Mounts:            │      │                          │  │
+│  │  - workspace        │      │  Features:               │  │
+│  │  - .anthropic_key   │      │  - Branch protection     │  │
+│  └─────────────────────┘      │  - Credential injection  │  │
+│                               │  - Access control        │  │
+│                               └─────────────────────────────┤
+└─────────────────────────────────────────────────────────────┘
+```

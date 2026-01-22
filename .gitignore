@@ -1,9 +1,16 @@
 # Environment files
 .env
 .env.*
+!.env.example
 
 # Workspace directory (contains mounted projects)
 workspace/
 
 # Container build artifacts
 .container/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
