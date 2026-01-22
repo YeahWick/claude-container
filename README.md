@@ -60,12 +60,13 @@ You can create a project-specific setup script that installs additional tooling 
 
 ### How It Works
 
-1. Create a `.claude-container/setup.sh` script in your project root
-2. When you run `run.sh`, it detects this script and builds a project-specific image
-3. The setup runs **once** during image build, not on every container start
-4. Changes to the setup script trigger a rebuild (tracked via checksum)
+1. Create a `.claude-container/` directory in your project root
+2. Add either `setup.sh` (simple) or `Containerfile` (advanced)
+3. When you run `run.sh`, it detects this and builds a project-specific image
+4. The setup runs **once** during image build, not on every container start
+5. Changes to setup files or dependency manifests trigger a rebuild
 
-### Example Setup Script
+### Simple Setup (setup.sh)
 
 Create `.claude-container/setup.sh` in your project:
 
@@ -91,12 +92,50 @@ echo "Setup complete!"
 
 See `examples/.claude-container/setup.sh` for a full template with more options.
 
+### Advanced Setup (Containerfile)
+
+For full control, create `.claude-container/Containerfile`:
+
+```dockerfile
+FROM claude-code
+
+USER root
+
+# Multi-stage build, custom base images, etc.
+RUN apt-get update && apt-get install -y python3 python3-pip
+
+# Copy project files during build if needed
+COPY requirements.txt /tmp/
+RUN pip3 install -r /tmp/requirements.txt
+
+USER claude
+WORKDIR /home/claude/workspace
+ENTRYPOINT ["/home/claude/start.sh"]
+```
+
+### Automatic Rebuild Detection
+
+The image checksum includes:
+- `.claude-container/setup.sh`
+- `.claude-container/Containerfile`
+- `package.json`, `requirements.txt`, `Gemfile`, `go.mod`, `Cargo.toml` (if present)
+
+Changes to any of these files trigger an automatic rebuild.
+
+### Force Rebuild
+
+To force a rebuild even when files haven't changed:
+
+```bash
+./run.sh --rebuild
+```
+
 ### Image Naming
 
 Project-specific images are named `claude-code-<project>:<checksum>`:
-- `claude-code-my-app:a1b2c3d4e5f6` - Built from `my-app/.claude-container/setup.sh`
+- `claude-code-my-app:a1b2c3d4e5f6` - Built from `my-app/.claude-container/`
 
-The checksum ensures the image is rebuilt when the setup script changes.
+Old images are automatically cleaned up when a new version is built.
 
 ## Usage Examples
 
@@ -113,6 +152,11 @@ The checksum ensures the image is rebuilt when the setup script changes.
 ### Continue a previous session
 ```bash
 ./run.sh --continue
+```
+
+### Force rebuild project image
+```bash
+./run.sh --rebuild
 ```
 
 ## Manual Usage
