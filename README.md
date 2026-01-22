@@ -27,22 +27,40 @@ Run Claude Code CLI in a Linux container on macOS using [Apple's container tool]
 
 ## Quick Start
 
-The easiest way to run Claude Code is with the launcher script:
+### Option 1: Source the Aliases File (Recommended)
+
+Add this to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+source /path/to/claude-container/aliases.sh
+```
+
+Then reload your shell and use the convenient aliases from any project:
+
+```bash
+cd ~/my-project
+claude              # Start Claude Code
+claude-rebuild      # Force rebuild project image
+claude-image        # Show current project's image name
+
+# Or use short versions:
+cc                  # Same as 'claude'
+cc-rebuild          # Same as 'claude-rebuild'
+cc-image            # Same as 'claude-image'
+```
+
+### Option 2: Direct Script Execution
+
+You can also run the scripts directly:
 
 ```bash
 # From your project directory
 /path/to/claude-container/run.sh
 ```
 
-Or create an alias:
+Or create a manual alias:
 ```bash
 alias claude-container='/path/to/claude-container/run.sh'
-```
-
-Then just run from any project:
-```bash
-cd ~/my-project
-claude-container
 ```
 
 ## What Gets Mounted
@@ -143,22 +161,31 @@ Old images are automatically cleaned up when a new version is built.
 
 ### Start interactive session
 ```bash
-./run.sh
+claude              # Using alias
+./run.sh           # Or direct script
 ```
 
 ### Run with a specific prompt
 ```bash
-./run.sh -p "explain this codebase"
+claude -p "explain this codebase"
 ```
 
 ### Continue a previous session
 ```bash
-./run.sh --continue
+claude --continue
 ```
 
 ### Force rebuild project image
 ```bash
-./run.sh --rebuild
+claude-rebuild      # Using alias
+claude --rebuild   # Or with flag
+./run.sh --rebuild # Or direct script
+```
+
+### Show current project's image name
+```bash
+claude-image       # Using alias
+./image-name.sh   # Or direct script
 ```
 
 ## Manual Usage
@@ -176,7 +203,11 @@ container run -it \
 
 ```bash
 # Show image name for current project
-/path/to/claude-container/image-name.sh
+claude-image                                # Using alias
+/path/to/claude-container/image-name.sh    # Or direct script
+
+# Force rebuild project image
+claude-rebuild                              # Using alias
 
 # List running containers
 container ls
@@ -187,7 +218,7 @@ container ls -a
 # List images
 container images ls
 
-# Rebuild the image
+# Rebuild the base image
 container build -t claude-code .
 ```
 
