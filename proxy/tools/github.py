@@ -7,12 +7,13 @@ Provides controlled access to GitHub operations with:
 - Credential management
 """
 
+import fnmatch
 import os
 import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Body
 from pydantic import BaseModel, Field
@@ -24,11 +25,13 @@ from .base import ToolResponse, ToolError
 TOOL_INFO = {
     "name": "github",
     "description": "GitHub operations with branch protection and access controls",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "cli_command": "proxy-github",
     "blocked_branches": settings.github_blocked_branches,
+    "allowed_branch_patterns": settings.github_allowed_branch_patterns,
     "features": [
-        "Branch protection (configurable blocked branches)",
+        "Branch protection (blocked branches + allowed patterns)",
+        "Inverse glob patterns (e.g., 'username/*' allows only matching branches)",
         "Push with automatic credential injection",
         "Pull/fetch operations",
         "Repository cloning",
@@ -82,11 +85,52 @@ class BranchRequest(BaseModel):
     repo_path: str = Field(default="/home/claude/workspace", description="Repository path")
 
 
-def is_branch_blocked(branch: str) -> bool:
-    """Check if a branch is in the blocked list."""
+def matches_any_pattern(branch: str, patterns: list[str]) -> bool:
+    """Check if branch matches any of the glob patterns."""
+    for pattern in patterns:
+        if fnmatch.fnmatch(branch, pattern):
+            return True
+    return False
+
+
+def check_branch_access(branch: str) -> Tuple[bool, str]:
+    """
+    Check if a branch can be pushed to.
+
+    Returns (is_allowed, reason) tuple.
+
+    Logic:
+    1. If branch matches a blocked branch (exact match), it's blocked
+    2. If allowed_branch_patterns is configured:
+       - Branch must match at least one allowed pattern
+       - If it doesn't match any, it's blocked
+    3. Otherwise, branch is allowed
+    """
     # Normalize branch name (remove refs/heads/ prefix if present)
     normalized = branch.replace("refs/heads/", "")
-    return normalized in settings.github_blocked_branches
+
+    # Check explicit blocklist first (exact match)
+    if normalized in settings.github_blocked_branches:
+        return False, f"Branch '{normalized}' is explicitly blocked"
+
+    # Check allowed patterns (inverse glob)
+    if settings.github_allowed_branch_patterns:
+        if matches_any_pattern(normalized, settings.github_allowed_branch_patterns):
+            return True, f"Branch '{normalized}' matches allowed pattern"
+        else:
+            return False, (
+                f"Branch '{normalized}' does not match any allowed pattern. "
+                f"Allowed patterns: {settings.github_allowed_branch_patterns}"
+            )
+
+    # No allowed patterns configured, branch is allowed
+    return True, "Branch is allowed"
+
+
+def is_branch_blocked(branch: str) -> bool:
+    """Check if a branch is blocked (for backward compatibility)."""
+    allowed, _ = check_branch_access(branch)
+    return not allowed
 
 
 def is_repo_allowed(repo_url: str) -> bool:
@@ -157,6 +201,7 @@ async def github_info():
         **TOOL_INFO,
         "configuration": {
             "blocked_branches": settings.github_blocked_branches,
+            "allowed_branch_patterns": settings.github_allowed_branch_patterns or "all (no patterns configured)",
             "has_token": bool(settings.github_token),
             "allowed_repos": settings.github_allowed_repos or "all",
             "blocked_repos": settings.github_blocked_repos or "none",
@@ -240,10 +285,13 @@ async def git_status(repo_path: str = Query(default="/home/claude/workspace")):
             if index_status == "?" and work_status == "?":
                 files["untracked"].append(filename)
 
+    allowed, reason = check_branch_access(branch)
     return {
         "branch": branch,
         "tracking": tracking,
-        "is_blocked_branch": is_branch_blocked(branch),
+        "push_allowed": allowed,
+        "push_reason": reason,
+        "is_blocked_branch": not allowed,  # Backward compatibility
         "files": files,
         "clean": len(file_lines) == 0,
     }
@@ -274,22 +322,32 @@ async def list_branches(
         upstream = parts[1] if len(parts) > 1 and parts[1] else None
         is_current = parts[2] == "*" if len(parts) > 2 else False
 
+        allowed, reason = check_branch_access(name)
         branch_info = {
             "name": name,
             "upstream": upstream,
             "current": is_current,
-            "blocked": is_branch_blocked(name),
+            "push_allowed": allowed,
+            "blocked": not allowed,  # Backward compatibility
         }
         branches.append(branch_info)
 
         if is_current:
             current = name
 
-    return {
+    result = {
         "current": current,
         "branches": branches,
         "blocked_branches": settings.github_blocked_branches,
     }
+
+    if settings.github_allowed_branch_patterns:
+        result["allowed_patterns"] = settings.github_allowed_branch_patterns
+        result["mode"] = "allowlist"
+    else:
+        result["mode"] = "blocklist"
+
+    return result
 
 
 @router.get("/remotes")
@@ -319,24 +377,47 @@ async def list_remotes(repo_path: str = Query(default="/home/claude/workspace"))
 
 @router.get("/blocked-branches")
 async def get_blocked_branches():
-    """Get list of blocked branches."""
-    return {
+    """Get branch protection configuration."""
+    result = {
         "blocked_branches": settings.github_blocked_branches,
-        "description": "These branches cannot be pushed to through the proxy",
+        "allowed_branch_patterns": settings.github_allowed_branch_patterns,
+        "mode": "allowlist" if settings.github_allowed_branch_patterns else "blocklist",
     }
+
+    if settings.github_allowed_branch_patterns:
+        result["description"] = (
+            "Only branches matching allowed patterns can be pushed. "
+            "Blocked branches are always blocked regardless of patterns."
+        )
+        result["examples"] = {
+            "allowed": [f"'{p}' matches branches like '{p.replace('*', 'feature-1')}'"
+                       for p in settings.github_allowed_branch_patterns[:3]],
+        }
+    else:
+        result["description"] = "Listed branches cannot be pushed to through the proxy"
+
+    return result
 
 
 @router.post("/check-push")
 async def check_push(request: PushRequest):
     """Check if a push operation would be allowed without executing it."""
-    blocked = is_branch_blocked(request.branch)
+    allowed, reason = check_branch_access(request.branch)
 
-    return {
-        "allowed": not blocked,
+    result = {
+        "allowed": allowed,
         "branch": request.branch,
-        "reason": f"Branch '{request.branch}' is protected" if blocked else None,
+        "reason": reason,
         "blocked_branches": settings.github_blocked_branches,
     }
+
+    if settings.github_allowed_branch_patterns:
+        result["allowed_patterns"] = settings.github_allowed_branch_patterns
+        result["mode"] = "allowlist"
+    else:
+        result["mode"] = "blocklist"
+
+    return result
 
 
 @router.post("/push")
@@ -345,18 +426,28 @@ async def git_push(request: PushRequest):
     Push changes to remote with branch protection.
 
     Blocked branches (default: main, master) cannot be pushed to.
+    If allowed_branch_patterns is configured, only matching branches are allowed.
     """
     # Check branch protection
-    if is_branch_blocked(request.branch):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "BRANCH_PROTECTED",
-                "message": f"Cannot push to protected branch '{request.branch}'",
-                "blocked_branches": settings.github_blocked_branches,
-                "suggestion": "Create a feature branch and submit a pull request instead",
-            },
-        )
+    allowed, reason = check_branch_access(request.branch)
+    if not allowed:
+        detail = {
+            "error": "BRANCH_PROTECTED",
+            "message": f"Cannot push to branch '{request.branch}'",
+            "reason": reason,
+            "blocked_branches": settings.github_blocked_branches,
+        }
+
+        if settings.github_allowed_branch_patterns:
+            detail["allowed_patterns"] = settings.github_allowed_branch_patterns
+            detail["suggestion"] = (
+                f"Use a branch matching one of these patterns: "
+                f"{', '.join(settings.github_allowed_branch_patterns)}"
+            )
+        else:
+            detail["suggestion"] = "Create a feature branch and submit a pull request instead"
+
+        raise HTTPException(status_code=403, detail=detail)
 
     # Build push command
     args = ["push"]

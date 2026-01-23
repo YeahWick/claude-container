@@ -28,7 +28,13 @@ class ProxySettings(BaseSettings):
     github_token: str = Field(default="", description="GitHub personal access token")
     github_blocked_branches: list[str] = Field(
         default=["main", "master"],
-        description="Branches that cannot be pushed to",
+        description="Branches that cannot be pushed to (exact names)",
+    )
+    github_allowed_branch_patterns: list[str] = Field(
+        default=[],
+        description="Glob patterns for allowed branches (empty = all allowed). "
+                    "If set, only matching branches can be pushed. "
+                    "Example: ['username/*', 'feature/*', 'claude/*']",
     )
     github_allowed_repos: list[str] = Field(
         default=[],

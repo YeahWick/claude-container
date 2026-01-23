@@ -10,11 +10,27 @@ debug: false
 # GitHub tool configuration
 github_token: ""  # Set via PROXY_GITHUB_TOKEN environment variable
 
-# Branches that cannot be pushed to
+# Branches that cannot be pushed to (exact match, always blocked)
 # Default: ["main", "master"]
 github_blocked_branches:
   - main
   - master
+
+# Allowed branch patterns (glob patterns, inverse protection)
+# If set, ONLY branches matching these patterns can be pushed to.
+# Blocked branches above are still blocked even if they match a pattern.
+# Leave empty to allow all branches (except blocked ones).
+github_allowed_branch_patterns: []
+# Examples:
+#   - "username/*"        # Allow only branches starting with "username/"
+#   - "claude/*"          # Allow branches like "claude/feature-123"
+#   - "feature/*"         # Allow feature branches
+#   - "*/fix-*"           # Allow any prefix with fix- branches
+#
+# Common use cases:
+#   - Personal prefix:    ["myname/*"]
+#   - Team workflow:      ["feature/*", "bugfix/*", "hotfix/*"]
+#   - Bot-friendly:       ["claude/*", "dependabot/*", "renovate/*"]
 
 # Repository access control (optional)
 # If allowed_repos is empty, all repos are allowed (except blocked ones)

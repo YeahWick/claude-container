@@ -119,9 +119,13 @@ ${YELLOW}Examples:${NC}
   proxy-github check main
 
 ${YELLOW}Branch Protection:${NC}
-  The proxy blocks pushes to protected branches (default: main, master).
-  Use 'proxy-github blocked' to see the list of protected branches.
-  Create feature branches and use pull requests instead.
+  The proxy can protect branches in two modes:
+
+  1. Blocklist mode (default): Blocks specific branches (main, master)
+  2. Allowlist mode: Only allows branches matching patterns (e.g., 'username/*')
+
+  Use 'proxy-github blocked' to see current protection settings.
+  Use 'proxy-github check <branch>' to test if a branch is allowed.
 EOF
 }
 
@@ -142,10 +146,16 @@ cmd_status() {
         clean=$(echo "$response" | jq -r '.clean')
         blocked=$(echo "$response" | jq -r '.is_blocked_branch')
 
+        local push_allowed push_reason
+        push_allowed=$(echo "$response" | jq -r '.push_allowed')
+        push_reason=$(echo "$response" | jq -r '.push_reason // ""')
+
         echo -e "On branch ${CYAN}${branch}${NC}"
 
-        if [ "$blocked" = "true" ]; then
-            print_warning "⚠ This is a protected branch - pushes are blocked"
+        if [ "$push_allowed" = "true" ]; then
+            print_success "✓ Push allowed"
+        else
+            print_warning "⚠ Push blocked: ${push_reason}"
         fi
 
         if [ "$clean" = "true" ]; then
@@ -189,10 +199,17 @@ cmd_branches() {
     response=$(api_get "/github/branches?repo_path=${WORKSPACE}${all_flag}")
 
     if command -v jq &> /dev/null; then
+        local mode
+        mode=$(echo "$response" | jq -r '.mode // "blocklist"')
+
         echo -e "${CYAN}Branches:${NC}"
-        echo "$response" | jq -r '.branches[] | (if .current then "* " else "  " end) + .name + (if .blocked then " (protected)" else "" end)'
+        echo "$response" | jq -r '.branches[] | (if .current then "* " else "  " end) + .name + (if .push_allowed then "" else " (blocked)" end)'
         echo
-        echo -e "${YELLOW}Protected branches:${NC} $(echo "$response" | jq -r '.blocked_branches | join(", ")')"
+
+        if [ "$mode" = "allowlist" ]; then
+            echo -e "${GREEN}Allowed patterns:${NC} $(echo "$response" | jq -r '.allowed_patterns | join(", ")')"
+        fi
+        echo -e "${RED}Blocked branches:${NC} $(echo "$response" | jq -r '.blocked_branches | join(", ")')"
     else
         echo "$response"
     fi
@@ -219,13 +236,33 @@ cmd_blocked() {
     response=$(api_get "/github/blocked-branches")
 
     if command -v jq &> /dev/null; then
-        echo -e "${YELLOW}Protected branches (pushes blocked):${NC}"
+        local mode
+        mode=$(echo "$response" | jq -r '.mode')
+
+        echo -e "${CYAN}Branch Protection Configuration${NC}"
+        echo
+
+        if [ "$mode" = "allowlist" ]; then
+            echo -e "${GREEN}Mode: Allowlist (only matching patterns allowed)${NC}"
+            echo
+            echo -e "${YELLOW}Allowed patterns:${NC}"
+            echo "$response" | jq -r '.allowed_branch_patterns[]' | while read -r pattern; do
+                echo "  + $pattern"
+            done
+            echo
+            echo -e "${RED}Always blocked:${NC}"
+        else
+            echo -e "${YELLOW}Mode: Blocklist (specific branches blocked)${NC}"
+            echo
+            echo -e "${RED}Blocked branches:${NC}"
+        fi
+
         echo "$response" | jq -r '.blocked_branches[]' | while read -r branch; do
             echo "  - $branch"
         done
+
         echo
-        echo "These branches cannot be pushed to directly."
-        echo "Create a feature branch and submit a pull request instead."
+        echo "$response" | jq -r '.description'
     else
         echo "$response"
     fi
@@ -246,14 +283,29 @@ cmd_check() {
     response=$(api_post "/github/check-push" "{\"branch\": \"${branch}\"}")
 
     if command -v jq &> /dev/null; then
-        local allowed
+        local allowed mode reason
         allowed=$(echo "$response" | jq -r '.allowed')
+        mode=$(echo "$response" | jq -r '.mode')
+        reason=$(echo "$response" | jq -r '.reason // ""')
+
+        echo -e "Branch: ${CYAN}${branch}${NC}"
+        echo -e "Mode: ${mode}"
+        echo
 
         if [ "$allowed" = "true" ]; then
-            print_success "Push to '${branch}' is allowed"
+            print_success "✓ Push is ALLOWED"
+            [ -n "$reason" ] && echo "  $reason"
         else
-            print_error "Push to '${branch}' is blocked"
-            echo "$response" | jq -r '.reason // "Branch is protected"'
+            print_error "✗ Push is BLOCKED"
+            [ -n "$reason" ] && echo "  $reason"
+            echo
+
+            if [ "$mode" = "allowlist" ]; then
+                echo "Allowed patterns:"
+                echo "$response" | jq -r '.allowed_patterns[]? // empty' | while read -r pattern; do
+                    echo "  + $pattern"
+                done
+            fi
         fi
     else
         echo "$response"
@@ -335,13 +387,33 @@ EOF
         fi
     else
         if echo "$response" | grep -q "BRANCH_PROTECTED"; then
-            print_error "Cannot push to protected branch '${branch}'"
+            print_error "Cannot push to branch '${branch}'"
             echo
-            print_warning "Protected branches: $(api_get "/github/blocked-branches" | jq -r '.blocked_branches | join(", ")')"
-            echo
-            echo "Suggestion: Create a feature branch and submit a pull request instead."
-            echo "  git checkout -b feature/my-change"
-            echo "  proxy-github push origin feature/my-change"
+
+            if command -v jq &> /dev/null; then
+                local detail reason suggestion
+                detail=$(echo "$response" | jq -r '.detail')
+                reason=$(echo "$detail" | jq -r '.reason // ""')
+                suggestion=$(echo "$detail" | jq -r '.suggestion // ""')
+
+                [ -n "$reason" ] && echo "Reason: $reason"
+                echo
+
+                # Check if there are allowed patterns
+                if echo "$detail" | jq -e '.allowed_patterns' > /dev/null 2>&1; then
+                    echo -e "${YELLOW}Allowed branch patterns:${NC}"
+                    echo "$detail" | jq -r '.allowed_patterns[]' | while read -r pattern; do
+                        echo "  + $pattern"
+                    done
+                    echo
+                fi
+
+                [ -n "$suggestion" ] && echo "Suggestion: $suggestion"
+            else
+                print_warning "Protected branches: $(api_get "/github/blocked-branches" | jq -r '.blocked_branches | join(", ")')"
+                echo
+                echo "Suggestion: Create a feature branch and submit a pull request instead."
+            fi
         else
             print_error "Push failed"
             if command -v jq &> /dev/null; then
