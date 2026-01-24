@@ -33,17 +33,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Check if container tool is available
-if ! command -v container &> /dev/null; then
-    echo -e "${RED}Error: Apple container tool not found${NC}"
-    echo "Install from: https://github.com/apple/container/releases"
+# Check if podman is available
+if ! command -v podman &> /dev/null; then
+    echo -e "${RED}Error: Podman not found${NC}"
+    echo "Install with:"
+    echo "  macOS:  brew install podman"
+    echo "  Linux:  sudo dnf install podman  # or apt install podman"
     exit 1
 fi
 
 # Ensure base image exists
-if ! container images ls 2>/dev/null | grep -q "^$BASE_IMAGE[[:space:]]"; then
+if ! podman images ls 2>/dev/null | grep -q "^$BASE_IMAGE[[:space:]]"; then
     echo -e "${YELLOW}Base image '$BASE_IMAGE' not found. Building...${NC}"
-    container build -t "$BASE_IMAGE" "$SCRIPT_DIR"
+    podman build -t "$BASE_IMAGE" "$SCRIPT_DIR"
 fi
 
 # Check for API key file
@@ -83,11 +85,11 @@ cleanup_old_images() {
     local current_tag="$2"
 
     # List all tags for this project image and remove old ones
-    container images ls 2>/dev/null | grep "^${project_image}:" | while read -r line; do
+    podman images ls 2>/dev/null | grep "^${project_image}:" | while read -r line; do
         local tag=$(echo "$line" | awk '{print $1":"$2}')
         if [ "$tag" != "$current_tag" ]; then
             echo -e "${YELLOW}Removing old image: $tag${NC}"
-            container images rm "$tag" 2>/dev/null || true
+            podman images rm "$tag" 2>/dev/null || true
         fi
     done
 }
@@ -112,7 +114,7 @@ if [ -d "$PROJECT_DIR" ] && { [ -f "$PROJECT_DIR/setup.sh" ] || [ -f "$PROJECT_D
     if [ "$FORCE_REBUILD" = true ]; then
         echo -e "${YELLOW}Force rebuild requested${NC}"
         NEEDS_BUILD=true
-    elif ! container images ls 2>/dev/null | grep -q "${PROJECT_IMAGE}.*${SETUP_CHECKSUM}"; then
+    elif ! podman images ls 2>/dev/null | grep -q "${PROJECT_IMAGE}.*${SETUP_CHECKSUM}"; then
         NEEDS_BUILD=true
     fi
 
@@ -126,10 +128,10 @@ if [ -d "$PROJECT_DIR" ] && { [ -f "$PROJECT_DIR/setup.sh" ] || [ -f "$PROJECT_D
         # Check if using custom Containerfile or generating one
         if [ -f "$PROJECT_DIR/Containerfile" ]; then
             echo -e "${BLUE}Using custom Containerfile${NC}"
-            container build -t "$PROJECT_IMAGE_TAG" -f "$PROJECT_DIR/Containerfile" .
+            podman build -t "$PROJECT_IMAGE_TAG" -f "$PROJECT_DIR/Containerfile" .
         else
             # Generate and pipe Containerfile via stdin - no temp files needed
-            container build -t "$PROJECT_IMAGE_TAG" -f - . <<EOF
+            podman build -t "$PROJECT_IMAGE_TAG" -f - . <<EOF
 FROM $BASE_IMAGE
 
 # Copy and run project-specific setup
@@ -159,7 +161,7 @@ echo ""
 # Run container with mounts:
 # - Current directory -> /home/claude/workspace
 # - API key file -> /home/claude/.anthropic_key (read-only)
-exec container run -it \
+exec podman run -it \
     -v "$(pwd):/home/claude/workspace" \
     -v "$KEY_FILE:/home/claude/.anthropic_key:ro" \
     "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
