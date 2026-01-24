@@ -1,108 +1,48 @@
-# Compose file for Claude Code with Proxy and Credential Agent
-# Compatible with: podman-compose, docker-compose, docker compose
+# Claude Code Container with Command Agent
+# Simple two-container setup:
+# - command-agent: Executes git/gh commands with credentials and restrictions
+# - claude: Claude Code with CLI wrappers that forward to agent
 #
-# This configuration runs Claude Code container alongside:
-# - Proxy container: Controlled access to external services with branch protection
-# - Credential Agent: Secure socket-based credential management
-#
-# SECURITY FEATURES:
-# - Proxy only accessible via internal network (no exposed ports)
-# - Credential Agent uses Unix socket (no network exposure)
-# - Credentials stored in locked memory (no swap)
-# - SO_PEERCRED verification for caller identity
-# - Policy-based access control per tool/operation
-#
-# Usage (Podman - recommended):
-#   podman-compose up -d            # Start all containers
-#   podman-compose exec claude bash # Access Claude Code container
-#   podman-compose logs cred-agent  # View credential agent logs
-#   podman-compose down             # Stop all containers
-#
-# Usage (Docker):
-#   docker-compose up -d            # Start all containers
-#   docker compose up -d            # Alternative syntax
-#
-# Or use the wrapper script:
-#   ./run-with-proxy.sh             # Auto-detects podman/docker
-#
-# Environment variables can be set in a .env file or passed directly.
-
-version: "3.8"
+# Usage:
+#   podman-compose up -d
+#   podman-compose exec claude bash
+#   podman-compose down
 
 services:
-  # Credential Agent - Secure socket-based credential management
-  # Credentials are stored in locked memory and accessed via Unix socket
-  cred-agent:
+  command-agent:
     build:
-      context: ./credential-agent
+      context: ./command-agent
       dockerfile: Containerfile
-    container_name: claude-cred-agent
+    container_name: claude-command-agent
     restart: unless-stopped
     environment:
-      # Credentials loaded at startup, then cleared from environment
+      # Credentials (loaded then cleared from env)
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
-      - NPM_TOKEN=${NPM_TOKEN:-}
-      - PYPI_TOKEN=${PYPI_TOKEN:-}
-      - DOCKER_TOKEN=${DOCKER_TOKEN:-}
-      # Agent configuration
+      # Branch protection
+      - BLOCKED_BRANCHES=${BLOCKED_BRANCHES:-["main","master"]}
+      - ALLOWED_BRANCH_PATTERNS=${ALLOWED_BRANCH_PATTERNS:-[]}
+      # Agent config
       - AGENT_ALLOWED_UIDS=1000
       - AGENT_DEBUG=${AGENT_DEBUG:-false}
     volumes:
-      # Socket directory - shared with Claude container
       - agent-socket:/run/agent
-      # Policy configuration
-      - ./credential-agent/policy.yaml:/app/policy.yaml:ro
-    # Security hardening
+      - ${PROJECT_DIR:-.}:/workspace:Z
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     cap_add:
-      - IPC_LOCK  # Required for mlock
+      - IPC_LOCK
     read_only: true
     tmpfs:
       - /tmp:size=10M,mode=1777
-
-  # Proxy container - provides controlled access to external services
-  # NOTE: No ports are exposed - only accessible via internal network
-  proxy:
-    build:
-      context: ./proxy
-      dockerfile: Containerfile
-    container_name: claude-proxy
-    restart: unless-stopped
-    environment:
-      # GitHub configuration (token now managed by cred-agent, but proxy still needs for git ops)
-      - PROXY_GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - PROXY_GITHUB_BLOCKED_BRANCHES=${PROXY_GITHUB_BLOCKED_BRANCHES:-["main","master"]}
-      - PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS=${PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS:-[]}
-      # Shared secret for authentication (auto-generated if not set)
-      - PROXY_AUTH_SECRET=${PROXY_AUTH_SECRET:-}
-      # Require authentication (default: true when secret is set)
-      - PROXY_AUTH_REQUIRED=${PROXY_AUTH_REQUIRED:-true}
-      # Debug mode (set to true for verbose logging)
-      - PROXY_DEBUG=${PROXY_DEBUG:-false}
-    volumes:
-      # Optional: mount custom config
-      - ./proxy/config.yaml:/app/config.yaml:ro
-    networks:
-      - claude-internal
-    depends_on:
-      cred-agent:
-        condition: service_healthy
-    # No port exposure - only accessible via internal network
-    # To debug, temporarily add: ports: ["8080:8080"]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/agent/cmd.sock'); s.close()"]
+      interval: 10s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 5s
 
-  # Claude Code container
   claude:
     build:
       context: .
@@ -111,41 +51,20 @@ services:
     stdin_open: true
     tty: true
     environment:
-      # Proxy configuration
-      - PROXY_HOST=proxy
-      - PROXY_PORT=8080
-      # Shared secret for proxy authentication (must match proxy)
-      - PROXY_AUTH_SECRET=${PROXY_AUTH_SECRET:-}
-      # Credential agent socket path
-      - CRED_AGENT_SOCKET=/run/agent/cred.sock
-      # Workspace path
+      - AGENT_SOCKET=/run/agent/cmd.sock
       - WORKSPACE=/home/claude/workspace
     volumes:
-      # Mount current directory as workspace
       - ${PROJECT_DIR:-.}:/home/claude/workspace:Z
-      # Mount Anthropic API key (read-only)
       - ${ANTHROPIC_KEY_FILE:-~/.anthropic_key}:/home/claude/.anthropic_key:ro
-      # Credential agent socket (read-only access to socket)
       - agent-socket:/run/agent:ro
-    networks:
-      - claude-internal
     depends_on:
-      proxy:
+      command-agent:
         condition: service_healthy
 
 volumes:
-  # Shared socket volume using tmpfs (in-memory only)
   agent-socket:
     driver: local
     driver_opts:
       type: tmpfs
       device: tmpfs
       o: size=1M,uid=1000,gid=1000
-
-networks:
-  # Internal network - containers can communicate but no external access
-  # In Podman: creates an isolated network without NAT to host
-  # In Docker: creates a bridge network with internal flag
-  claude-internal:
-    driver: bridge
-    internal: true

@@ -1,0 +1,40 @@
+#!/bin/bash
+# Check command-agent status
+set -e
+
+SOCKET="${AGENT_SOCKET:-/run/agent/cmd.sock}"
+REQUEST='{"action": "health"}'
+
+# Send to socket and get response
+if command -v socat &>/dev/null; then
+    RESPONSE=$(echo "$REQUEST" | socat -t5 - UNIX-CONNECT:"$SOCKET" 2>/dev/null)
+elif command -v python3 &>/dev/null; then
+    RESPONSE=$(python3 -c "
+import socket
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(5)
+sock.connect('$SOCKET')
+sock.send(b'$REQUEST')
+data = sock.recv(65536)
+sock.close()
+print(data.decode())
+" 2>/dev/null)
+else
+    echo "Error: socat or python3 required" >&2
+    exit 1
+fi
+
+if [ -z "$RESPONSE" ]; then
+    echo "Agent not responding"
+    exit 1
+fi
+
+# Pretty print
+echo "Command Agent Status"
+echo "===================="
+echo "$RESPONSE" | jq -r '
+"Status: \(.status // "unknown")",
+"Credentials: \(.credentials // [] | join(", "))",
+"Blocked branches: \(.blocked_branches // [] | join(", "))",
+"Allowed patterns: \(.allowed_patterns // [] | join(", "))"
+'
