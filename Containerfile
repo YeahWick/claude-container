@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     jq \
+    socat \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (LTS version)

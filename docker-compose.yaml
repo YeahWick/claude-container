@@ -1,22 +1,25 @@
-# Compose file for Claude Code with Proxy
+# Compose file for Claude Code with Proxy and Credential Agent
 # Compatible with: podman-compose, docker-compose, docker compose
 #
-# This configuration runs Claude Code container alongside a proxy container
-# that provides controlled access to external services with credential management
-# and configurable restrictions (e.g., branch protection for GitHub).
+# This configuration runs Claude Code container alongside:
+# - Proxy container: Controlled access to external services with branch protection
+# - Credential Agent: Secure socket-based credential management
 #
-# SECURITY: The proxy is only accessible from the Claude Code container via
-# an internal network. No ports are exposed to the host. Optional
-# shared-secret authentication adds an additional layer of security.
+# SECURITY FEATURES:
+# - Proxy only accessible via internal network (no exposed ports)
+# - Credential Agent uses Unix socket (no network exposure)
+# - Credentials stored in locked memory (no swap)
+# - SO_PEERCRED verification for caller identity
+# - Policy-based access control per tool/operation
 #
 # Usage (Podman - recommended):
-#   podman-compose up -d            # Start both containers
+#   podman-compose up -d            # Start all containers
 #   podman-compose exec claude bash # Access Claude Code container
-#   podman-compose logs proxy       # View proxy logs
+#   podman-compose logs cred-agent  # View credential agent logs
 #   podman-compose down             # Stop all containers
 #
 # Usage (Docker):
-#   docker-compose up -d            # Start both containers
+#   docker-compose up -d            # Start all containers
 #   docker compose up -d            # Alternative syntax
 #
 # Or use the wrapper script:
@@ -27,6 +30,42 @@
 version: "3.8"
 
 services:
+  # Credential Agent - Secure socket-based credential management
+  # Credentials are stored in locked memory and accessed via Unix socket
+  cred-agent:
+    build:
+      context: ./credential-agent
+      dockerfile: Containerfile
+    container_name: claude-cred-agent
+    restart: unless-stopped
+    environment:
+      # Credentials loaded at startup, then cleared from environment
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - NPM_TOKEN=${NPM_TOKEN:-}
+      - PYPI_TOKEN=${PYPI_TOKEN:-}
+      - DOCKER_TOKEN=${DOCKER_TOKEN:-}
+      # Agent configuration
+      - AGENT_ALLOWED_UIDS=1000
+      - AGENT_DEBUG=${AGENT_DEBUG:-false}
+    volumes:
+      # Socket directory - shared with Claude container
+      - agent-socket:/run/agent
+      # Policy configuration
+      - ./credential-agent/policy.yaml:/app/policy.yaml:ro
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - IPC_LOCK  # Required for mlock
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M,mode=1777
+
   # Proxy container - provides controlled access to external services
   # NOTE: No ports are exposed - only accessible via internal network
   proxy:
@@ -36,7 +75,7 @@ services:
     container_name: claude-proxy
     restart: unless-stopped
     environment:
-      # GitHub configuration
+      # GitHub configuration (token now managed by cred-agent, but proxy still needs for git ops)
       - PROXY_GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - PROXY_GITHUB_BLOCKED_BRANCHES=${PROXY_GITHUB_BLOCKED_BRANCHES:-["main","master"]}
       - PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS=${PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS:-[]}
@@ -51,6 +90,9 @@ services:
       - ./proxy/config.yaml:/app/config.yaml:ro
     networks:
       - claude-internal
+    depends_on:
+      cred-agent:
+        condition: service_healthy
     # No port exposure - only accessible via internal network
     # To debug, temporarily add: ports: ["8080:8080"]
     healthcheck:
@@ -74,6 +116,8 @@ services:
       - PROXY_PORT=8080
       # Shared secret for proxy authentication (must match proxy)
       - PROXY_AUTH_SECRET=${PROXY_AUTH_SECRET:-}
+      # Credential agent socket path
+      - CRED_AGENT_SOCKET=/run/agent/cred.sock
       # Workspace path
       - WORKSPACE=/home/claude/workspace
     volumes:
@@ -81,11 +125,22 @@ services:
       - ${PROJECT_DIR:-.}:/home/claude/workspace:Z
       # Mount Anthropic API key (read-only)
       - ${ANTHROPIC_KEY_FILE:-~/.anthropic_key}:/home/claude/.anthropic_key:ro
+      # Credential agent socket (read-only access to socket)
+      - agent-socket:/run/agent:ro
     networks:
       - claude-internal
     depends_on:
       proxy:
         condition: service_healthy
+
+volumes:
+  # Shared socket volume using tmpfs (in-memory only)
+  agent-socket:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1M,uid=1000,gid=1000
 
 networks:
   # Internal network - containers can communicate but no external access

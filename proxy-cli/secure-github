@@ -1,0 +1,553 @@
+#!/bin/bash
+# Claude Code - Secure GitHub CLI
+# Git operations with socket-based credential injection and local branch protection
+#
+# This CLI provides:
+# - Credential injection from the secure socket-based agent
+# - Local branch protection rules (no HTTP proxy required)
+# - Git operations with injected credentials
+#
+# Use this instead of proxy-github when running without the HTTP proxy,
+# or when you want credentials to stay entirely within the local container.
+
+set -e
+
+# Configuration
+CRED_SOCKET="${CRED_AGENT_SOCKET:-/run/agent/cred.sock}"
+WORKSPACE="${WORKSPACE:-/home/claude/workspace}"
+BRANCH_CONFIG="${BRANCH_CONFIG_FILE:-/home/claude/.branch-protection.yaml}"
+
+# Default branch protection (can be overridden by config file or env vars)
+BLOCKED_BRANCHES="${BLOCKED_BRANCHES:-main,master}"
+ALLOWED_PATTERNS="${ALLOWED_BRANCH_PATTERNS:-}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+print_error() {
+    echo -e "${RED}Error: $1${NC}" >&2
+}
+
+print_success() {
+    echo -e "${GREEN}$1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}$1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}$1${NC}"
+}
+
+# Check if socket exists
+check_socket() {
+    if [ ! -S "$CRED_SOCKET" ]; then
+        return 1
+    fi
+    return 0
+}
+
+# Get credentials from agent via socket
+get_credentials() {
+    if ! check_socket; then
+        return 1
+    fi
+
+    local response
+    if command -v python3 &> /dev/null; then
+        response=$(python3 << 'PYTHON'
+import socket
+import json
+import os
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(5)
+try:
+    sock.connect(os.environ.get('CRED_SOCKET', '/run/agent/cred.sock'))
+    sock.send(json.dumps({'action': 'inject', 'tool': 'github'}).encode())
+    response = sock.recv(8192).decode()
+    sock.close()
+    print(response)
+except Exception as e:
+    print(json.dumps({'error': str(e)}))
+PYTHON
+)
+    else
+        return 1
+    fi
+
+    if echo "$response" | grep -q '"error"'; then
+        return 1
+    fi
+
+    echo "$response"
+}
+
+# Run git with injected credentials
+run_git_authenticated() {
+    local creds_json
+    creds_json=$(get_credentials 2>/dev/null)
+
+    if [ $? -eq 0 ] && [ -n "$creds_json" ]; then
+        # Extract credentials and run git
+        python3 << PYTHON
+import json
+import os
+import subprocess
+import sys
+
+creds = json.loads('''$creds_json''')
+env = os.environ.copy()
+
+if 'env' in creds:
+    env.update(creds['env'])
+
+args = sys.argv[1:] if len(sys.argv) > 1 else []
+git_args = '''$@'''.split() if '''$@''' else []
+result = subprocess.run(['git'] + git_args, env=env)
+sys.exit(result.returncode)
+PYTHON
+    else
+        # No credentials, run git without
+        git "$@"
+    fi
+}
+
+# Check if branch is allowed for push
+check_branch_allowed() {
+    local branch="$1"
+
+    # Check blocked branches first
+    IFS=',' read -ra blocked <<< "$BLOCKED_BRANCHES"
+    for b in "${blocked[@]}"; do
+        if [ "$branch" = "$b" ]; then
+            echo "blocked"
+            return 1
+        fi
+    done
+
+    # If allowed patterns are set, check them
+    if [ -n "$ALLOWED_PATTERNS" ]; then
+        IFS=',' read -ra patterns <<< "$ALLOWED_PATTERNS"
+        for pattern in "${patterns[@]}"; do
+            # Simple glob matching
+            if [[ "$branch" == $pattern ]]; then
+                echo "allowed"
+                return 0
+            fi
+        done
+        echo "not_in_allowlist"
+        return 1
+    fi
+
+    echo "allowed"
+    return 0
+}
+
+# Show help
+show_help() {
+    cat << EOF
+${CYAN}Claude Code - Secure GitHub CLI${NC}
+
+Git operations with socket-based credential injection and local branch protection.
+
+${YELLOW}Usage:${NC}
+  secure-github <command> [options]
+
+${YELLOW}Commands:${NC}
+  push [remote] <branch>     Push to remote (with branch protection)
+  pull [remote] [branch]     Pull from remote
+  fetch [remote]             Fetch from remote
+  clone <url> [dest]         Clone a repository
+  status                     Show git status with branch info
+  branches                   List branches with protection status
+  check <branch>             Check if branch push is allowed
+  help                       Show this help
+
+${YELLOW}Push Options:${NC}
+  -u, --set-upstream         Set upstream tracking branch
+  -f, --force                Force push (uses --force-with-lease)
+
+${YELLOW}Environment Variables:${NC}
+  CRED_AGENT_SOCKET          Credential agent socket path
+  BLOCKED_BRANCHES           Comma-separated list of blocked branches
+  ALLOWED_BRANCH_PATTERNS    Comma-separated glob patterns for allowed branches
+  WORKSPACE                  Repository path (default: /home/claude/workspace)
+
+${YELLOW}Branch Protection:${NC}
+  By default, pushes to 'main' and 'master' are blocked.
+  Set BLOCKED_BRANCHES to customize the blocklist.
+  Set ALLOWED_BRANCH_PATTERNS to use allowlist mode (e.g., "claude/*,feature/*").
+
+${YELLOW}Examples:${NC}
+  secure-github push origin feature-branch
+  secure-github push -u origin claude/my-feature
+  secure-github pull --rebase
+  secure-github clone https://github.com/user/repo
+  secure-github check main
+
+  # Custom branch protection
+  BLOCKED_BRANCHES="main,master,production" secure-github push origin develop
+  ALLOWED_BRANCH_PATTERNS="claude/*,feature/*" secure-github push origin claude/fix
+
+${YELLOW}Security:${NC}
+  - Credentials are fetched just-in-time from the secure agent
+  - Credentials only exist in the git subprocess environment
+  - Branch protection is enforced locally before any push attempt
+EOF
+}
+
+# Git status with branch info
+cmd_status() {
+    cd "$WORKSPACE" || exit 1
+
+    local branch
+    branch=$(git branch --show-current 2>/dev/null || echo "")
+
+    if [ -z "$branch" ]; then
+        print_error "Not on a branch (detached HEAD?)"
+        git status
+        return
+    fi
+
+    local status
+    status=$(check_branch_allowed "$branch")
+
+    echo -e "On branch ${CYAN}${branch}${NC}"
+
+    if [ "$status" = "allowed" ]; then
+        print_success "Push is allowed for this branch"
+    else
+        print_warning "Push is BLOCKED for this branch ($status)"
+    fi
+
+    echo
+    git status --short
+}
+
+# List branches with protection status
+cmd_branches() {
+    cd "$WORKSPACE" || exit 1
+
+    echo -e "${CYAN}Branches:${NC}"
+
+    local current
+    current=$(git branch --show-current 2>/dev/null)
+
+    git branch --format='%(refname:short)' | while read -r branch; do
+        local prefix="  "
+        [ "$branch" = "$current" ] && prefix="* "
+
+        local status
+        status=$(check_branch_allowed "$branch")
+
+        if [ "$status" = "allowed" ]; then
+            echo -e "${prefix}${branch}"
+        else
+            echo -e "${prefix}${branch} ${RED}(blocked)${NC}"
+        fi
+    done
+
+    echo
+    echo -e "${RED}Blocked branches:${NC} ${BLOCKED_BRANCHES}"
+    if [ -n "$ALLOWED_PATTERNS" ]; then
+        echo -e "${GREEN}Allowed patterns:${NC} ${ALLOWED_PATTERNS}"
+    fi
+}
+
+# Check if branch is allowed
+cmd_check() {
+    local branch="$1"
+
+    if [ -z "$branch" ]; then
+        print_error "Branch name required"
+        echo "Usage: secure-github check <branch>"
+        exit 1
+    fi
+
+    local status
+    status=$(check_branch_allowed "$branch")
+
+    echo -e "Branch: ${CYAN}${branch}${NC}"
+    echo
+
+    case "$status" in
+        allowed)
+            print_success "Push is ALLOWED"
+            ;;
+        blocked)
+            print_error "Push is BLOCKED (branch is in blocklist)"
+            ;;
+        not_in_allowlist)
+            print_error "Push is BLOCKED (branch not in allowed patterns)"
+            echo "Allowed patterns: ${ALLOWED_PATTERNS}"
+            ;;
+    esac
+}
+
+# Push command
+cmd_push() {
+    local remote="origin"
+    local branch=""
+    local set_upstream=false
+    local force=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -u|--set-upstream)
+                set_upstream=true
+                shift
+                ;;
+            -f|--force)
+                force=true
+                shift
+                ;;
+            *)
+                if [ -z "$branch" ]; then
+                    if [ $# -gt 1 ] && [[ ! "$2" =~ ^- ]]; then
+                        remote="$1"
+                        branch="$2"
+                        shift 2
+                    else
+                        branch="$1"
+                        shift
+                    fi
+                else
+                    shift
+                fi
+                ;;
+        esac
+    done
+
+    cd "$WORKSPACE" || exit 1
+
+    # Get current branch if not specified
+    if [ -z "$branch" ]; then
+        branch=$(git branch --show-current 2>/dev/null || echo "")
+        if [ -z "$branch" ]; then
+            print_error "Could not determine current branch"
+            exit 1
+        fi
+        print_info "Pushing current branch: ${branch}"
+    fi
+
+    # Check branch protection
+    local status
+    status=$(check_branch_allowed "$branch")
+
+    if [ "$status" != "allowed" ]; then
+        print_error "Cannot push to branch '${branch}'"
+        echo
+        case "$status" in
+            blocked)
+                echo "This branch is in the blocklist."
+                ;;
+            not_in_allowlist)
+                echo "This branch doesn't match any allowed patterns."
+                echo "Allowed patterns: ${ALLOWED_PATTERNS}"
+                ;;
+        esac
+        echo
+        echo "Suggestion: Create a feature branch and push to that instead."
+        exit 1
+    fi
+
+    # Build git push command
+    local push_args=("push")
+    [ "$set_upstream" = true ] && push_args+=("-u")
+    [ "$force" = true ] && push_args+=("--force-with-lease")
+    push_args+=("$remote" "$branch")
+
+    print_info "Pushing to ${remote}/${branch}..."
+
+    # Run git with credentials
+    if run_git_authenticated "${push_args[@]}"; then
+        print_success "Successfully pushed to ${remote}/${branch}"
+    else
+        print_error "Push failed"
+        exit 1
+    fi
+}
+
+# Pull command
+cmd_pull() {
+    local remote="origin"
+    local branch=""
+    local rebase=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -r|--rebase)
+                rebase=true
+                shift
+                ;;
+            *)
+                if [ -z "$branch" ]; then
+                    if [ $# -gt 1 ] && [[ ! "$2" =~ ^- ]]; then
+                        remote="$1"
+                        branch="$2"
+                        shift 2
+                    else
+                        branch="$1"
+                        shift
+                    fi
+                else
+                    shift
+                fi
+                ;;
+        esac
+    done
+
+    cd "$WORKSPACE" || exit 1
+
+    local pull_args=("pull")
+    [ "$rebase" = true ] && pull_args+=("--rebase")
+    [ -n "$remote" ] && pull_args+=("$remote")
+    [ -n "$branch" ] && pull_args+=("$branch")
+
+    print_info "Pulling..."
+
+    if run_git_authenticated "${pull_args[@]}"; then
+        print_success "Pull completed"
+    else
+        print_error "Pull failed"
+        exit 1
+    fi
+}
+
+# Fetch command
+cmd_fetch() {
+    local remote="origin"
+    local all_remotes=false
+    local prune=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -a|--all)
+                all_remotes=true
+                shift
+                ;;
+            -p|--prune)
+                prune=true
+                shift
+                ;;
+            *)
+                remote="$1"
+                shift
+                ;;
+        esac
+    done
+
+    cd "$WORKSPACE" || exit 1
+
+    local fetch_args=("fetch")
+    [ "$all_remotes" = true ] && fetch_args+=("--all")
+    [ "$prune" = true ] && fetch_args+=("--prune")
+    [ "$all_remotes" = false ] && fetch_args+=("$remote")
+
+    print_info "Fetching..."
+
+    if run_git_authenticated "${fetch_args[@]}"; then
+        print_success "Fetch completed"
+    else
+        print_error "Fetch failed"
+        exit 1
+    fi
+}
+
+# Clone command
+cmd_clone() {
+    local url=""
+    local destination=""
+    local branch=""
+    local depth=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -b|--branch)
+                branch="$2"
+                shift 2
+                ;;
+            -d|--depth)
+                depth="$2"
+                shift 2
+                ;;
+            *)
+                if [ -z "$url" ]; then
+                    url="$1"
+                elif [ -z "$destination" ]; then
+                    destination="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [ -z "$url" ]; then
+        print_error "Repository URL required"
+        echo "Usage: secure-github clone <url> [destination]"
+        exit 1
+    fi
+
+    local clone_args=("clone")
+    [ -n "$branch" ] && clone_args+=("-b" "$branch")
+    [ -n "$depth" ] && clone_args+=("--depth" "$depth")
+    clone_args+=("$url")
+    [ -n "$destination" ] && clone_args+=("$destination")
+
+    print_info "Cloning ${url}..."
+
+    if run_git_authenticated "${clone_args[@]}"; then
+        print_success "Clone completed"
+    else
+        print_error "Clone failed"
+        exit 1
+    fi
+}
+
+# Main
+main() {
+    case "${1:-help}" in
+        push)
+            shift
+            cmd_push "$@"
+            ;;
+        pull)
+            shift
+            cmd_pull "$@"
+            ;;
+        fetch)
+            shift
+            cmd_fetch "$@"
+            ;;
+        clone)
+            shift
+            cmd_clone "$@"
+            ;;
+        status|st)
+            cmd_status
+            ;;
+        branches|branch|br)
+            cmd_branches
+            ;;
+        check)
+            shift
+            cmd_check "$@"
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        *)
+            # Pass through to git
+            run_git_authenticated "$@"
+            ;;
+    esac
+}
+
+main "$@"
