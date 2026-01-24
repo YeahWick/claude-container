@@ -1,18 +1,25 @@
 # claude-container
 
-Run Claude Code CLI in a Linux container on macOS using [Apple's container tool](https://github.com/apple/container).
+Run Claude Code CLI in a Linux container using Podman.
 
 ## Requirements
 
-- Mac with Apple Silicon
-- macOS 26 or later
-- [Apple container tool](https://github.com/apple/container/releases) installed
+- Podman installed on your system
 
 ## Setup
 
-1. Install the container tool and start the service:
+1. Install Podman:
    ```bash
-   container system start
+   # macOS
+   brew install podman
+   podman machine init
+   podman machine start
+
+   # Fedora/RHEL
+   sudo dnf install podman
+
+   # Ubuntu/Debian
+   sudo apt install podman
    ```
 
 2. Create your API key file:
@@ -20,9 +27,9 @@ Run Claude Code CLI in a Linux container on macOS using [Apple's container tool]
    echo 'your_anthropic_api_key' > ~/.anthropic_key
    ```
 
-3. Build the container:
+3. Build the base image:
    ```bash
-   container build -t claude-code .
+   podman build -t claude-code .
    ```
 
 ## Quick Start
@@ -193,7 +200,7 @@ claude-image       # Using alias
 If you prefer to run the container directly:
 
 ```bash
-container run -it \
+podman run -it \
   -v $(pwd):/home/claude/workspace \
   -v ~/.anthropic_key:/home/claude/.anthropic_key:ro \
   claude-code
@@ -210,16 +217,16 @@ claude-image                                # Using alias
 claude-rebuild                              # Using alias
 
 # List running containers
-container ls
+podman ps
 
 # List all containers
-container ls -a
+podman ps -a
 
 # List images
-container images ls
+podman images
 
 # Rebuild the base image
-container build -t claude-code .
+podman build -t claude-code .
 ```
 
 ## Environment Variables
@@ -231,7 +238,7 @@ container build -t claude-code .
 ## Building for Multiple Architectures
 
 ```bash
-container build --arch amd64,arm64 -t claude-code .
+podman build --platform linux/amd64,linux/arm64 -t claude-code .
 ```
 
 ## Proxy Container (Advanced)
