@@ -2,7 +2,8 @@
 # Run Claude Code with Proxy
 #
 # This script starts both the Claude Code container and the proxy container
-# using docker-compose, providing controlled access to external services.
+# using podman-compose (or docker-compose as fallback), providing controlled
+# access to external services.
 #
 # Usage:
 #   ./run-with-proxy.sh [options]
@@ -67,7 +68,7 @@ ${YELLOW}Environment Variables:${NC}
   PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS  JSON array of allowed patterns
 
 ${YELLOW}Security:${NC}
-  The proxy runs on an internal Docker network, accessible only from the
+  The proxy runs on an internal Podman network, accessible only from the
   Claude Code container. Optional shared-secret authentication adds an
   additional layer of security. If PROXY_AUTH_SECRET is not set, one will
   be auto-generated for the session.
@@ -88,13 +89,44 @@ ${YELLOW}Proxy Tools (available inside container):${NC}
 EOF
 }
 
-check_docker_compose() {
-    if command -v docker-compose &> /dev/null; then
-        COMPOSE_CMD="docker-compose"
-    elif docker compose version &> /dev/null 2>&1; then
-        COMPOSE_CMD="docker compose"
+# Detect container runtime and compose command
+detect_compose() {
+    # Check for Podman first (preferred)
+    if command -v podman &> /dev/null; then
+        CONTAINER_CMD="podman"
+        # Check for podman-compose or podman compose
+        if command -v podman-compose &> /dev/null; then
+            COMPOSE_CMD="podman-compose"
+            print_info "Using podman-compose"
+        elif podman compose version &> /dev/null 2>&1; then
+            COMPOSE_CMD="podman compose"
+            print_info "Using podman compose"
+        else
+            print_error "Podman found but podman-compose is not installed."
+            echo "Install with: pip install podman-compose"
+            echo "Or: sudo dnf install podman-compose (Fedora)"
+            echo "Or: brew install podman-compose (macOS)"
+            exit 1
+        fi
+    # Fall back to Docker
+    elif command -v docker &> /dev/null; then
+        CONTAINER_CMD="docker"
+        if command -v docker-compose &> /dev/null; then
+            COMPOSE_CMD="docker-compose"
+            print_info "Using docker-compose"
+        elif docker compose version &> /dev/null 2>&1; then
+            COMPOSE_CMD="docker compose"
+            print_info "Using docker compose"
+        else
+            print_error "Docker found but docker-compose is not available."
+            exit 1
+        fi
     else
-        print_error "Docker Compose not found. Please install Docker Compose."
+        print_error "Neither Podman nor Docker found. Please install Podman."
+        echo "Install with:"
+        echo "  macOS:  brew install podman podman-compose"
+        echo "  Fedora: sudo dnf install podman podman-compose"
+        echo "  Ubuntu: sudo apt install podman python3-pip && pip install podman-compose"
         exit 1
     fi
 }
@@ -110,6 +142,14 @@ check_requirements() {
         print_warning "Warning: No GitHub token configured."
         echo "Set GITHUB_TOKEN environment variable or create a .env file."
         echo "See .env.example for configuration options."
+    fi
+
+    # For Podman, ensure the machine is running (macOS/Windows)
+    if [ "$CONTAINER_CMD" = "podman" ]; then
+        if ! podman info &> /dev/null; then
+            print_warning "Podman machine may not be running."
+            echo "Start it with: podman machine start"
+        fi
     fi
 }
 
@@ -180,7 +220,7 @@ open_shell() {
 }
 
 main() {
-    check_docker_compose
+    detect_compose
 
     case "${1:-}" in
         --help|-h)

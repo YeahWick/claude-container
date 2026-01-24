@@ -1,20 +1,30 @@
-# Docker Compose for Claude Code with Proxy
+# Compose file for Claude Code with Proxy
+# Compatible with: podman-compose, docker-compose, docker compose
 #
 # This configuration runs Claude Code container alongside a proxy container
 # that provides controlled access to external services with credential management
 # and configurable restrictions (e.g., branch protection for GitHub).
 #
 # SECURITY: The proxy is only accessible from the Claude Code container via
-# an internal Docker network. No ports are exposed to the host. Optional
+# an internal network. No ports are exposed to the host. Optional
 # shared-secret authentication adds an additional layer of security.
 #
-# Usage:
-#   docker-compose up -d           # Start both containers
-#   docker-compose exec claude bash # Access Claude Code container
-#   docker-compose logs proxy       # View proxy logs
-#   docker-compose down             # Stop all containers
+# Usage (Podman - recommended):
+#   podman-compose up -d            # Start both containers
+#   podman-compose exec claude bash # Access Claude Code container
+#   podman-compose logs proxy       # View proxy logs
+#   podman-compose down             # Stop all containers
+#
+# Usage (Docker):
+#   docker-compose up -d            # Start both containers
+#   docker compose up -d            # Alternative syntax
+#
+# Or use the wrapper script:
+#   ./run-with-proxy.sh             # Auto-detects podman/docker
 #
 # Environment variables can be set in a .env file or passed directly.
+
+version: "3.8"
 
 services:
   # Proxy container - provides controlled access to external services
@@ -68,7 +78,7 @@ services:
       - WORKSPACE=/home/claude/workspace
     volumes:
       # Mount current directory as workspace
-      - ${PROJECT_DIR:-.}:/home/claude/workspace
+      - ${PROJECT_DIR:-.}:/home/claude/workspace:Z
       # Mount Anthropic API key (read-only)
       - ${ANTHROPIC_KEY_FILE:-~/.anthropic_key}:/home/claude/.anthropic_key:ro
     networks:
@@ -78,7 +88,9 @@ services:
         condition: service_healthy
 
 networks:
-  # Internal network - not accessible from host
+  # Internal network - containers can communicate but no external access
+  # In Podman: creates an isolated network without NAT to host
+  # In Docker: creates a bridge network with internal flag
   claude-internal:
     driver: bridge
-    internal: true  # Prevents external access to this network
+    internal: true

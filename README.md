@@ -243,6 +243,29 @@ The proxy container provides controlled access to external services with credent
 - **Access control**: Restrict which repositories can be accessed
 - **Extensibility**: Add new tools with their own access controls
 
+### Requirements
+
+- **Podman** (recommended) or Docker
+- **podman-compose** or docker-compose
+
+Install on macOS:
+```bash
+brew install podman podman-compose
+podman machine init
+podman machine start
+```
+
+Install on Fedora/RHEL:
+```bash
+sudo dnf install podman podman-compose
+```
+
+Install on Ubuntu/Debian:
+```bash
+sudo apt install podman
+pip install podman-compose
+```
+
 ### Quick Start with Proxy
 
 1. Create a `.env` file with your configuration:
@@ -251,12 +274,14 @@ The proxy container provides controlled access to external services with credent
    # Edit .env and add your GITHUB_TOKEN
    ```
 
-2. Start with proxy using docker-compose:
+2. Start with proxy:
    ```bash
    ./run-with-proxy.sh
    # Or use the alias after sourcing aliases.sh:
    claude-proxy
    ```
+
+The script auto-detects Podman or Docker and uses the appropriate compose command.
 
 ### Proxy CLI Tools
 
@@ -292,6 +317,11 @@ github_blocked_branches:
   - main
   - master
 
+# Allowed branch patterns (inverse glob - only these patterns allowed)
+github_allowed_branch_patterns:
+  - "username/*"    # Only allow branches starting with your username
+  - "claude/*"      # Allow Claude's branches
+
 # Repository access control (optional)
 github_allowed_repos: []    # Empty = all allowed
 github_blocked_repos:
@@ -301,7 +331,8 @@ github_blocked_repos:
 Environment variables (in `.env`):
 ```bash
 GITHUB_TOKEN=your_token_here
-BLOCKED_BRANCHES=["main","master","production"]
+PROXY_GITHUB_BLOCKED_BRANCHES=["main","master","production"]
+PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS=["username/*","feature/*"]
 ```
 
 ### Adding New Tools
@@ -334,12 +365,14 @@ async def do_action(param: str):
     return {"success": True}
 ```
 
-### Docker Compose Commands
+### Compose Commands
 
 ```bash
-# Start both containers
+# Start both containers (auto-detects podman/docker)
 ./run-with-proxy.sh
-# Or: docker-compose up
+
+# Or use podman-compose directly:
+podman-compose up -d
 
 # Start in background
 ./run-with-proxy.sh --detach
@@ -352,30 +385,41 @@ async def do_action(param: str):
 
 # Stop containers
 ./run-with-proxy.sh --stop
-# Or: docker-compose down
 
 # Rebuild containers
 ./run-with-proxy.sh --build
 ```
 
+### Security
+
+The proxy container runs on an isolated internal network:
+
+- **No exposed ports**: Proxy is not accessible from the host
+- **Internal network**: Only the Claude Code container can reach the proxy
+- **Shared-secret auth**: Optional authentication layer (auto-generated per session)
+- **SELinux support**: Volume mounts use `:Z` flag for proper labeling
+
 ### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Docker Network                          │
-│                                                             │
-│  ┌─────────────────────┐      ┌─────────────────────────┐  │
-│  │   Claude Code       │      │      Proxy Container     │  │
-│  │   Container         │ HTTP │                          │  │
-│  │                     │─────▶│  /github/push            │  │
-│  │  proxy-github push  │      │  /github/pull            │  │
-│  │  proxy-cli tools    │      │  /github/clone           │  │
-│  │                     │      │  /tools                  │  │
-│  │  Mounts:            │      │                          │  │
-│  │  - workspace        │      │  Features:               │  │
-│  │  - .anthropic_key   │      │  - Branch protection     │  │
-│  └─────────────────────┘      │  - Credential injection  │  │
-│                               │  - Access control        │  │
+│                    Internal Podman Network                   │
+│                    (no external access)                      │
+│                                                              │
+│  ┌─────────────────────┐      ┌─────────────────────────┐   │
+│  │   Claude Code       │      │      Proxy Container     │   │
+│  │   Container         │ HTTP │                          │   │
+│  │                     │─────▶│  /github/push            │   │
+│  │  proxy-github push  │ auth │  /github/pull            │   │
+│  │  proxy-cli tools    │      │  /github/clone           │   │
+│  │                     │      │  /tools                  │   │
+│  │  Mounts:            │      │                          │   │
+│  │  - workspace        │      │  Features:               │   │
+│  │  - .anthropic_key   │      │  - Branch protection     │   │
+│  └─────────────────────┘      │  - Credential injection  │   │
+│                               │  - Access control        │   │
 │                               └─────────────────────────────┤
+│                                         ╳                    │
 └─────────────────────────────────────────────────────────────┘
+                              blocked from host
 ```
