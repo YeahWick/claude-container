@@ -1,0 +1,78 @@
+# Credential Agent Policy Configuration
+#
+# This file defines access control policies for tools and credentials.
+# The credential agent uses this to determine what operations are allowed.
+
+# List of UIDs allowed to request credentials
+# Default: 1000 (claude user in container)
+allowed_uids:
+  - 1000
+
+# Default behavior when no explicit rule matches
+# true = deny access unless explicitly allowed
+# false = allow access unless explicitly denied
+default_deny: false
+
+# Log all credential access attempts
+audit_all: true
+
+# Tool-specific policies
+tools:
+  # GitHub credentials and operations
+  github:
+    enabled: true
+    description: "GitHub token for git operations"
+    operations:
+      get: true      # Get raw token
+      inject: true   # Get environment injection format
+      sign: false    # Don't allow signing with GitHub token
+
+  # GitLab credentials
+  gitlab:
+    enabled: true
+    description: "GitLab token for git operations"
+    operations:
+      get: true
+      inject: true
+      sign: false
+
+  # AWS credentials
+  aws:
+    enabled: true
+    description: "AWS access credentials"
+    operations:
+      get: false     # Don't expose raw AWS keys
+      inject: true   # Only provide as environment format
+      sign: false
+
+  # NPM registry credentials
+  npm:
+    enabled: true
+    description: "NPM registry token"
+    operations:
+      get: true
+      inject: true
+      sign: false
+
+  # PyPI credentials
+  pypi:
+    enabled: true
+    description: "PyPI upload token"
+    operations:
+      get: true
+      inject: true
+      sign: false
+
+  # Docker registry credentials
+  docker:
+    enabled: true
+    description: "Docker registry token"
+    operations:
+      get: false     # Don't expose raw token
+      inject: true   # Only provide as environment format
+      sign: false
+
+# Example of a disabled tool:
+# secretservice:
+#   enabled: false
+#   description: "Disabled for security"
