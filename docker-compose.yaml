@@ -52,11 +52,12 @@ services:
     tty: true
     environment:
       - AGENT_SOCKET=/run/agent/cmd.sock
-      - WORKSPACE=/home/claude/workspace
     volumes:
-      - ${PROJECT_DIR:-.}:/home/claude/workspace:Z
+      # Same path in both containers so git commands work
+      - ${PROJECT_DIR:-.}:/workspace:Z
       - ${ANTHROPIC_KEY_FILE:-~/.anthropic_key}:/home/claude/.anthropic_key:ro
       - agent-socket:/run/agent:ro
+    working_dir: /workspace
     depends_on:
       command-agent:
         condition: service_healthy

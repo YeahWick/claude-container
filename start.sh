@@ -32,8 +32,7 @@ fi
 # Show current workspace
 echo -e "${GREEN}Workspace:${NC} $(pwd)"
 if [ -d ".git" ]; then
-    echo -e "${GREEN}Git repo:${NC} $(git remote get-url origin 2>/dev/null || echo 'local repo')"
-    echo -e "${GREEN}Branch:${NC} $(git branch --show-current 2>/dev/null || echo 'unknown')"
+    echo -e "${GREEN}Git repo detected${NC}"
 fi
 echo ""
 

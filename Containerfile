@@ -26,7 +26,7 @@ USER claude
 WORKDIR /home/claude
 
 # Create directories
-RUN mkdir -p /home/claude/workspace /home/claude/bin
+RUN mkdir -p /workspace /home/claude/bin
 
 # Copy CLI wrappers (git, gh, curl -> forward to agent)
 COPY --chown=claude:claude cli/ /home/claude/bin/
@@ -39,6 +39,6 @@ ENV PATH="/home/claude/bin:${PATH}"
 COPY --chown=claude:claude start.sh /home/claude/start.sh
 RUN chmod +x /home/claude/start.sh
 
-WORKDIR /home/claude/workspace
+WORKDIR /workspace
 
 ENTRYPOINT ["/home/claude/start.sh"]
