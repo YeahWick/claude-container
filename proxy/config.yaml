@@ -1,0 +1,64 @@
+# Claude Code Proxy Configuration
+#
+# This file configures the proxy server behavior.
+# All settings can also be overridden via environment variables
+# prefixed with PROXY_ (e.g., PROXY_GITHUB_TOKEN).
+
+# Server settings
+debug: false
+
+# GitHub tool configuration
+github_token: ""  # Set via PROXY_GITHUB_TOKEN environment variable
+
+# Branches that cannot be pushed to (exact match, always blocked)
+# Default: ["main", "master"]
+github_blocked_branches:
+  - main
+  - master
+
+# Allowed branch patterns (glob patterns, inverse protection)
+# If set, ONLY branches matching these patterns can be pushed to.
+# Blocked branches above are still blocked even if they match a pattern.
+# Leave empty to allow all branches (except blocked ones).
+github_allowed_branch_patterns: []
+# Examples:
+#   - "username/*"        # Allow only branches starting with "username/"
+#   - "claude/*"          # Allow branches like "claude/feature-123"
+#   - "feature/*"         # Allow feature branches
+#   - "*/fix-*"           # Allow any prefix with fix- branches
+#
+# Common use cases:
+#   - Personal prefix:    ["myname/*"]
+#   - Team workflow:      ["feature/*", "bugfix/*", "hotfix/*"]
+#   - Bot-friendly:       ["claude/*", "dependabot/*", "renovate/*"]
+
+# Repository access control (optional)
+# If allowed_repos is empty, all repos are allowed (except blocked ones)
+github_allowed_repos: []
+# Example:
+#   - github.com/myorg/repo1
+#   - github.com/myorg/repo2
+
+# Repositories that are blocked (only used if allowed_repos is empty)
+github_blocked_repos: []
+# Example:
+#   - github.com/company/production-config
+
+# Tool access control (optional)
+# If allowed_tools is empty, all tools are allowed (except blocked ones)
+allowed_tools: []
+blocked_tools: []
+
+# ============================================================
+# Security / Authentication
+# ============================================================
+
+# Shared secret for authenticating requests
+# If set, all requests (except /health) must include X-Proxy-Auth header
+# Set via PROXY_AUTH_SECRET environment variable (recommended)
+# Generate with: openssl rand -hex 32
+auth_secret: ""
+
+# Require authentication when auth_secret is set (default: true)
+# Set to false to make auth optional (useful for debugging)
+auth_required: true

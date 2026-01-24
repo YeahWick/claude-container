@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     git \
     ca-certificates \
     gnupg \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (LTS version)
@@ -30,6 +31,11 @@ RUN mkdir -p /home/claude/workspace
 # Copy startup script
 COPY --chown=claude:claude start.sh /home/claude/start.sh
 RUN chmod +x /home/claude/start.sh
+
+# Copy proxy CLI tools
+COPY --chown=claude:claude proxy-cli/ /home/claude/bin/
+RUN chmod +x /home/claude/bin/*
+ENV PATH="/home/claude/bin:${PATH}"
 
 # Set the workspace as the default directory
 WORKDIR /home/claude/workspace

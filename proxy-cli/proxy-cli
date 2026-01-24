@@ -1,0 +1,230 @@
+#!/bin/bash
+# Claude Code Proxy CLI
+# Main CLI tool for interacting with the proxy server
+
+set -e
+
+# Configuration
+PROXY_HOST="${PROXY_HOST:-proxy}"
+PROXY_PORT="${PROXY_PORT:-8080}"
+PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
+PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET:-}"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Helper functions
+print_error() {
+    echo -e "${RED}Error: $1${NC}" >&2
+}
+
+print_success() {
+    echo -e "${GREEN}$1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}$1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}$1${NC}"
+}
+
+# Check if proxy is available
+check_proxy() {
+    if ! curl -s --connect-timeout 2 "${PROXY_URL}/health" > /dev/null 2>&1; then
+        print_error "Proxy server is not available at ${PROXY_URL}"
+        echo "Make sure the proxy container is running."
+        exit 1
+    fi
+}
+
+# Make API request
+api_request() {
+    local method="$1"
+    local endpoint="$2"
+    local data="$3"
+
+    local url="${PROXY_URL}${endpoint}"
+    local curl_args=(-s -X "$method" -H "Content-Type: application/json")
+
+    # Add authentication header if secret is set
+    if [ -n "$PROXY_AUTH_SECRET" ]; then
+        curl_args+=(-H "X-Proxy-Auth: ${PROXY_AUTH_SECRET}")
+    fi
+
+    if [ -n "$data" ]; then
+        curl_args+=(-d "$data")
+    fi
+
+    curl "${curl_args[@]}" "$url"
+}
+
+# Format JSON output
+format_json() {
+    if command -v jq &> /dev/null; then
+        jq -r "$@" 2>/dev/null || cat
+    else
+        cat
+    fi
+}
+
+# Show main help
+show_help() {
+    cat << EOF
+${CYAN}Claude Code Proxy CLI${NC}
+
+Usage: proxy-cli <command> [options]
+
+${YELLOW}Commands:${NC}
+  tools           List all available proxy tools
+  tool <name>     Get detailed info about a specific tool
+  health          Check proxy server health
+  help            Show this help message
+
+${YELLOW}Tool-specific CLI:${NC}
+  proxy-github    GitHub operations (git push, pull, clone, etc.)
+
+${YELLOW}Environment Variables:${NC}
+  PROXY_HOST        Proxy server hostname (default: proxy)
+  PROXY_PORT        Proxy server port (default: 8080)
+  PROXY_AUTH_SECRET Shared secret for authentication (if required)
+
+${YELLOW}Examples:${NC}
+  proxy-cli tools                    # List available tools
+  proxy-cli tool github              # Get GitHub tool info
+  proxy-github push origin my-branch # Push to branch via proxy
+
+For tool-specific help, run: proxy-<tool> help
+EOF
+}
+
+# List available tools
+list_tools() {
+    check_proxy
+    print_info "Available proxy tools:"
+    echo
+
+    local response
+    response=$(api_request GET "/tools")
+
+    if command -v jq &> /dev/null; then
+        echo "$response" | jq -r '.available_tools | to_entries[] | "\(.key): \(.value.description)"' | while read -r line; do
+            tool_name=$(echo "$line" | cut -d: -f1)
+            description=$(echo "$line" | cut -d: -f2-)
+            echo -e "  ${GREEN}${tool_name}${NC}:${description}"
+        done
+        echo
+        echo "Use 'proxy-cli tool <name>' for detailed information"
+        echo "Or 'proxy-<tool-name> help' for CLI usage"
+    else
+        echo "$response"
+    fi
+}
+
+# Get tool info
+get_tool_info() {
+    local tool_name="$1"
+
+    if [ -z "$tool_name" ]; then
+        print_error "Tool name required"
+        echo "Usage: proxy-cli tool <name>"
+        exit 1
+    fi
+
+    check_proxy
+
+    local response
+    response=$(api_request GET "/tools/${tool_name}")
+
+    if echo "$response" | grep -q '"error"'; then
+        print_error "Tool '${tool_name}' not found"
+        echo "Run 'proxy-cli tools' to see available tools"
+        exit 1
+    fi
+
+    if command -v jq &> /dev/null; then
+        echo -e "${CYAN}Tool: ${tool_name}${NC}"
+        echo
+        echo -e "${YELLOW}Description:${NC}"
+        echo "$response" | jq -r '.description // "No description"'
+        echo
+        echo -e "${YELLOW}Version:${NC} $(echo "$response" | jq -r '.version // "unknown"')"
+        echo
+        echo -e "${YELLOW}CLI Command:${NC} $(echo "$response" | jq -r '.cli_command // "proxy-'"${tool_name}"'"')"
+        echo
+        echo -e "${YELLOW}Endpoints:${NC}"
+        echo "$response" | jq -r '.endpoints[]? | "  \(.methods[0]) \(.path) - \(.description // .name // "No description")"'
+        echo
+
+        # Show features if available
+        if echo "$response" | jq -e '.features' > /dev/null 2>&1; then
+            echo -e "${YELLOW}Features:${NC}"
+            echo "$response" | jq -r '.features[]? | "  - \(.)"'
+        fi
+    else
+        echo "$response"
+    fi
+}
+
+# Check health
+check_health() {
+    print_info "Checking proxy health..."
+
+    local response
+    if response=$(curl -s --connect-timeout 5 "${PROXY_URL}/health"); then
+        if echo "$response" | grep -q '"healthy"'; then
+            print_success "Proxy is healthy"
+            if command -v jq &> /dev/null; then
+                echo "Loaded tools: $(echo "$response" | jq -r '.tools_loaded | join(", ")')"
+                local auth_enabled
+                auth_enabled=$(echo "$response" | jq -r '.auth_enabled')
+                if [ "$auth_enabled" = "true" ]; then
+                    if [ -n "$PROXY_AUTH_SECRET" ]; then
+                        print_success "Authentication: enabled (secret configured)"
+                    else
+                        print_warning "Authentication: enabled (secret NOT configured - requests will fail)"
+                    fi
+                else
+                    echo "Authentication: disabled"
+                fi
+            fi
+        else
+            print_warning "Proxy responded but may have issues"
+            echo "$response"
+        fi
+    else
+        print_error "Proxy is not responding at ${PROXY_URL}"
+        exit 1
+    fi
+}
+
+# Main command handler
+main() {
+    case "${1:-help}" in
+        tools|list)
+            list_tools
+            ;;
+        tool|info)
+            get_tool_info "$2"
+            ;;
+        health|status)
+            check_health
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        *)
+            print_error "Unknown command: $1"
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
