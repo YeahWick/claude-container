@@ -55,6 +55,18 @@ class ProxySettings(BaseSettings):
         description="List of blocked tools",
     )
 
+    # Authentication settings
+    auth_secret: str = Field(
+        default="",
+        description="Shared secret for authenticating requests. "
+                    "If set, all requests must include X-Proxy-Auth header.",
+    )
+    auth_required: bool = Field(
+        default=True,
+        description="Require authentication when auth_secret is set. "
+                    "Set to false to make auth optional (useful for debugging).",
+    )
+
     class Config:
         env_prefix = "PROXY_"
         env_file = ".env"

@@ -8,6 +8,7 @@ set -e
 PROXY_HOST="${PROXY_HOST:-proxy}"
 PROXY_PORT="${PROXY_PORT:-8080}"
 PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
+PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET:-}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -52,6 +53,11 @@ api_request() {
     local url="${PROXY_URL}${endpoint}"
     local curl_args=(-s -X "$method" -H "Content-Type: application/json")
 
+    # Add authentication header if secret is set
+    if [ -n "$PROXY_AUTH_SECRET" ]; then
+        curl_args+=(-H "X-Proxy-Auth: ${PROXY_AUTH_SECRET}")
+    fi
+
     if [ -n "$data" ]; then
         curl_args+=(-d "$data")
     fi
@@ -85,8 +91,9 @@ ${YELLOW}Tool-specific CLI:${NC}
   proxy-github    GitHub operations (git push, pull, clone, etc.)
 
 ${YELLOW}Environment Variables:${NC}
-  PROXY_HOST      Proxy server hostname (default: proxy)
-  PROXY_PORT      Proxy server port (default: 8080)
+  PROXY_HOST        Proxy server hostname (default: proxy)
+  PROXY_PORT        Proxy server port (default: 8080)
+  PROXY_AUTH_SECRET Shared secret for authentication (if required)
 
 ${YELLOW}Examples:${NC}
   proxy-cli tools                    # List available tools
@@ -175,6 +182,17 @@ check_health() {
             print_success "Proxy is healthy"
             if command -v jq &> /dev/null; then
                 echo "Loaded tools: $(echo "$response" | jq -r '.tools_loaded | join(", ")')"
+                local auth_enabled
+                auth_enabled=$(echo "$response" | jq -r '.auth_enabled')
+                if [ "$auth_enabled" = "true" ]; then
+                    if [ -n "$PROXY_AUTH_SECRET" ]; then
+                        print_success "Authentication: enabled (secret configured)"
+                    else
+                        print_warning "Authentication: enabled (secret NOT configured - requests will fail)"
+                    fi
+                else
+                    echo "Authentication: disabled"
+                fi
             fi
         else
             print_warning "Proxy responded but may have issues"

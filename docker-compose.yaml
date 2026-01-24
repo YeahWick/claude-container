@@ -4,6 +4,10 @@
 # that provides controlled access to external services with credential management
 # and configurable restrictions (e.g., branch protection for GitHub).
 #
+# SECURITY: The proxy is only accessible from the Claude Code container via
+# an internal Docker network. No ports are exposed to the host. Optional
+# shared-secret authentication adds an additional layer of security.
+#
 # Usage:
 #   docker-compose up -d           # Start both containers
 #   docker-compose exec claude bash # Access Claude Code container
@@ -14,6 +18,7 @@
 
 services:
   # Proxy container - provides controlled access to external services
+  # NOTE: No ports are exposed - only accessible via internal network
   proxy:
     build:
       context: ./proxy
@@ -23,14 +28,21 @@ services:
     environment:
       # GitHub configuration
       - PROXY_GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - PROXY_GITHUB_BLOCKED_BRANCHES=${BLOCKED_BRANCHES:-["main","master"]}
+      - PROXY_GITHUB_BLOCKED_BRANCHES=${PROXY_GITHUB_BLOCKED_BRANCHES:-["main","master"]}
+      - PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS=${PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS:-[]}
+      # Shared secret for authentication (auto-generated if not set)
+      - PROXY_AUTH_SECRET=${PROXY_AUTH_SECRET:-}
+      # Require authentication (default: true when secret is set)
+      - PROXY_AUTH_REQUIRED=${PROXY_AUTH_REQUIRED:-true}
       # Debug mode (set to true for verbose logging)
       - PROXY_DEBUG=${PROXY_DEBUG:-false}
     volumes:
       # Optional: mount custom config
       - ./proxy/config.yaml:/app/config.yaml:ro
     networks:
-      - claude-network
+      - claude-internal
+    # No port exposure - only accessible via internal network
+    # To debug, temporarily add: ports: ["8080:8080"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -50,6 +62,8 @@ services:
       # Proxy configuration
       - PROXY_HOST=proxy
       - PROXY_PORT=8080
+      # Shared secret for proxy authentication (must match proxy)
+      - PROXY_AUTH_SECRET=${PROXY_AUTH_SECRET:-}
       # Workspace path
       - WORKSPACE=/home/claude/workspace
     volumes:
@@ -58,11 +72,13 @@ services:
       # Mount Anthropic API key (read-only)
       - ${ANTHROPIC_KEY_FILE:-~/.anthropic_key}:/home/claude/.anthropic_key:ro
     networks:
-      - claude-network
+      - claude-internal
     depends_on:
       proxy:
         condition: service_healthy
 
 networks:
-  claude-network:
+  # Internal network - not accessible from host
+  claude-internal:
     driver: bridge
+    internal: true  # Prevents external access to this network

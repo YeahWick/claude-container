@@ -59,10 +59,18 @@ ${YELLOW}Options:${NC}
   --help        Show this help
 
 ${YELLOW}Environment Variables:${NC}
-  GITHUB_TOKEN         GitHub personal access token
-  BLOCKED_BRANCHES     JSON array of blocked branches (default: ["main","master"])
-  PROJECT_DIR          Directory to mount as workspace (default: current dir)
-  ANTHROPIC_KEY_FILE   Path to Anthropic API key file (default: ~/.anthropic_key)
+  GITHUB_TOKEN           GitHub personal access token
+  PROJECT_DIR            Directory to mount as workspace (default: current dir)
+  ANTHROPIC_KEY_FILE     Path to Anthropic API key file (default: ~/.anthropic_key)
+  PROXY_AUTH_SECRET      Shared secret for proxy auth (auto-generated if not set)
+  PROXY_GITHUB_BLOCKED_BRANCHES      JSON array of blocked branches
+  PROXY_GITHUB_ALLOWED_BRANCH_PATTERNS  JSON array of allowed patterns
+
+${YELLOW}Security:${NC}
+  The proxy runs on an internal Docker network, accessible only from the
+  Claude Code container. Optional shared-secret authentication adds an
+  additional layer of security. If PROXY_AUTH_SECRET is not set, one will
+  be auto-generated for the session.
 
 ${YELLOW}Examples:${NC}
   $0                          # Start interactive session
@@ -116,6 +124,19 @@ start_containers() {
 
     # Set default PROJECT_DIR if not set
     export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+
+    # Auto-generate auth secret if not set
+    if [ -z "${PROXY_AUTH_SECRET:-}" ]; then
+        if command -v openssl &> /dev/null; then
+            export PROXY_AUTH_SECRET=$(openssl rand -hex 32)
+            print_info "Generated session auth secret"
+        else
+            print_warning "Warning: openssl not found, skipping auth secret generation"
+            print_warning "Set PROXY_AUTH_SECRET manually for authentication"
+        fi
+    else
+        print_info "Using configured auth secret"
+    fi
 
     if [ -n "$build_flag" ]; then
         print_info "Building containers..."

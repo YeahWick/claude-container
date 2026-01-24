@@ -8,6 +8,7 @@ set -e
 PROXY_HOST="${PROXY_HOST:-proxy}"
 PROXY_PORT="${PROXY_PORT:-8080}"
 PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
+PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET:-}"
 WORKSPACE="${WORKSPACE:-/home/claude/workspace}"
 
 # Colors
@@ -44,16 +45,29 @@ check_proxy() {
     fi
 }
 
+# Build auth header args for curl
+get_auth_args() {
+    if [ -n "$PROXY_AUTH_SECRET" ]; then
+        echo "-H" "X-Proxy-Auth: ${PROXY_AUTH_SECRET}"
+    fi
+}
+
 # Make API request
 api_get() {
     local endpoint="$1"
-    curl -s -X GET -H "Content-Type: application/json" "${PROXY_URL}${endpoint}"
+    local auth_args
+    auth_args=$(get_auth_args)
+    # shellcheck disable=SC2086
+    curl -s -X GET -H "Content-Type: application/json" $auth_args "${PROXY_URL}${endpoint}"
 }
 
 api_post() {
     local endpoint="$1"
     local data="$2"
-    curl -s -X POST -H "Content-Type: application/json" -d "$data" "${PROXY_URL}${endpoint}"
+    local auth_args
+    auth_args=$(get_auth_args)
+    # shellcheck disable=SC2086
+    curl -s -X POST -H "Content-Type: application/json" $auth_args -d "$data" "${PROXY_URL}${endpoint}"
 }
 
 # JSON helper
@@ -104,9 +118,10 @@ ${YELLOW}Clone Options:${NC}
   -d, --depth <n>            Create shallow clone
 
 ${YELLOW}Environment Variables:${NC}
-  PROXY_HOST                 Proxy hostname (default: proxy)
-  PROXY_PORT                 Proxy port (default: 8080)
-  WORKSPACE                  Repository path (default: /home/claude/workspace)
+  PROXY_HOST        Proxy hostname (default: proxy)
+  PROXY_PORT        Proxy port (default: 8080)
+  PROXY_AUTH_SECRET Shared secret for authentication (if required)
+  WORKSPACE         Repository path (default: /home/claude/workspace)
 
 ${YELLOW}Examples:${NC}
   proxy-github push origin feature-branch

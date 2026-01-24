@@ -3,24 +3,78 @@ Claude Code Proxy Server
 
 A proxy server that provides controlled access to external services
 with credential management and configurable restrictions.
+
+Security:
+- Designed to run on an internal Docker network (not exposed to host)
+- Optional shared-secret authentication via X-Proxy-Auth header
+- Health endpoint is always accessible (for Docker healthchecks)
 """
 
+import hashlib
+import hmac
 import importlib
 import pkgutil
+import secrets
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from config import settings
 import tools
 
+
+# Authentication middleware
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Middleware to authenticate requests using shared secret."""
+
+    # Endpoints that don't require authentication
+    PUBLIC_PATHS = {"/health", "/"}
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth for public paths
+        if request.url.path in self.PUBLIC_PATHS:
+            return await call_next(request)
+
+        # Skip auth if no secret is configured or auth is disabled
+        if not settings.auth_secret or not settings.auth_required:
+            return await call_next(request)
+
+        # Check for auth header
+        auth_header = request.headers.get("X-Proxy-Auth", "")
+
+        if not auth_header:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": "AUTHENTICATION_REQUIRED",
+                    "message": "Missing X-Proxy-Auth header",
+                },
+            )
+
+        # Constant-time comparison to prevent timing attacks
+        if not hmac.compare_digest(auth_header, settings.auth_secret):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "AUTHENTICATION_FAILED",
+                    "message": "Invalid authentication token",
+                },
+            )
+
+        return await call_next(request)
+
+
 app = FastAPI(
     title="Claude Code Proxy",
     description="Proxy server for Claude Code container with credential management and access controls",
-    version="1.0.0",
+    version="1.1.0",
 )
+
+# Add authentication middleware
+app.add_middleware(AuthMiddleware)
 
 
 def discover_tools() -> dict[str, Any]:
@@ -66,8 +120,12 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "tools_loaded": list(registered_tools.keys())}
+    """Health check endpoint (always accessible, no auth required)."""
+    return {
+        "status": "healthy",
+        "tools_loaded": list(registered_tools.keys()),
+        "auth_enabled": bool(settings.auth_secret and settings.auth_required),
+    }
 
 
 @app.get("/tools")
