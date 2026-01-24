@@ -1,0 +1,48 @@
+#!/bin/bash
+# Curl wrapper - forwards commands to command-agent via socket
+set -e
+
+SOCKET="${AGENT_SOCKET:-/run/agent/cmd.sock}"
+
+# Build JSON request
+REQUEST=$(jq -n \
+    --arg cmd "curl" \
+    --argjson args "$(printf '%s\n' "$@" | jq -R . | jq -s .)" \
+    --arg cwd "$(pwd)" \
+    '{action: "exec", cmd: $cmd, args: $args, cwd: $cwd}')
+
+# Send to socket and get response
+if command -v socat &>/dev/null; then
+    RESPONSE=$(echo "$REQUEST" | socat -t300 - UNIX-CONNECT:"$SOCKET")
+elif command -v python3 &>/dev/null; then
+    RESPONSE=$(python3 -c "
+import socket, json, sys
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.settimeout(310)
+sock.connect('$SOCKET')
+sock.send('''$REQUEST'''.encode())
+data = b''
+while True:
+    chunk = sock.recv(65536)
+    if not chunk: break
+    data += chunk
+sock.close()
+print(data.decode())
+")
+else
+    echo "Error: socat or python3 required" >&2
+    exit 1
+fi
+
+# Parse response
+EXIT_CODE=$(echo "$RESPONSE" | jq -r '.exit_code // 1')
+STDOUT=$(echo "$RESPONSE" | jq -r '.stdout // ""')
+STDERR=$(echo "$RESPONSE" | jq -r '.stderr // ""')
+ERROR=$(echo "$RESPONSE" | jq -r '.error // ""')
+
+# Output
+[ -n "$STDOUT" ] && echo "$STDOUT"
+[ -n "$STDERR" ] && echo "$STDERR" >&2
+[ -n "$ERROR" ] && echo "Error: $ERROR" >&2
+
+exit "$EXIT_CODE"
