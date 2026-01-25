@@ -2,9 +2,10 @@
 #
 # This compose file sets up:
 # - Claude container (CLI with simple wrapper)
-# - CLI server (handles all tool execution)
+# - CLI server (handles all tool execution via Unix socket)
 #
-# To add more tools, update ALLOWED_TOOLS in plugins/cli/server.py
+# Communication: Containers share a Unix socket at /run/plugins/cli.sock
+# To add tools: Update create_default_caller() in plugins/cli/tool-caller.py
 
 services:
   # Claude Code container - minimal, just runs wrapper commands
@@ -27,8 +28,6 @@ services:
       - PATH=/home/claude/bin:/usr/local/bin:/usr/bin:/bin
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     working_dir: /workspace
-    networks:
-      - plugin-net
     depends_on:
       - cli-server
 
@@ -49,15 +48,9 @@ services:
       - GH_TOKEN=${GH_TOKEN:-${GITHUB_TOKEN}}
       - CLI_SOCKET=/run/plugins/cli.sock
     working_dir: /workspace
-    networks:
-      - plugin-net
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/plugins/cli.sock'); s.close()"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 5s
-
-networks:
-  plugin-net:
-    driver: bridge
