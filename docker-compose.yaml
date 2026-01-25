@@ -1,71 +1,70 @@
-# Claude Code Container with Command Agent
-# Simple two-container setup:
-# - command-agent: Executes git/gh commands with credentials and restrictions
-# - claude: Claude Code with CLI wrappers that forward to agent
+# Claude Container v2 - Plugin Socket Architecture
 #
-# Usage:
-#   podman-compose up -d
-#   podman-compose exec claude bash
-#   podman-compose down
+# This compose file sets up:
+# - Claude container (CLI with plugin wrappers)
+# - Git plugin (socket-based git with branch protection)
+#
+# Add more plugins by adding new services and mounting their sockets.
 
 services:
-  command-agent:
+  # Claude Code container - minimal, no direct tool access
+  claude:
     build:
-      context: ./command-agent
-      dockerfile: Containerfile
-    container_name: claude-command-agent
-    restart: unless-stopped
-    environment:
-      # Credentials (loaded then cleared from env)
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      # Branch protection
-      - BLOCKED_BRANCHES=${BLOCKED_BRANCHES:-["main","master"]}
-      - ALLOWED_BRANCH_PATTERNS=${ALLOWED_BRANCH_PATTERNS:-[]}
-      # Agent config
-      - AGENT_ALLOWED_UIDS=1000
-      - AGENT_DEBUG=${AGENT_DEBUG:-false}
+      context: .
+      dockerfile: claude/Containerfile
+    image: claude-code:v2
+    container_name: claude
+    stdin_open: true
+    tty: true
     volumes:
-      - agent-socket:/run/agent
-      - ${PROJECT_DIR:-.}:/workspace:Z
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+      # CLI wrappers - host directory mounted into PATH
+      - ${CLAUDE_HOME:-~/.claude-container}/cli:/home/claude/bin:ro
+      # Plugin sockets - read-only access
+      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:ro
+      # Workspace - project directory
+      - ${PROJECT_DIR:-.}:/workspace
+    environment:
+      - PATH=/home/claude/bin:/usr/local/bin:/usr/bin:/bin
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    working_dir: /workspace
+    networks:
+      - plugin-net
+    depends_on:
+      - git-plugin
+
+  # Git plugin - provides git with branch protection
+  git-plugin:
+    build:
+      context: .
+      dockerfile: plugins/git/Containerfile
+    image: plugin-git:v2
+    container_name: git-plugin
+    volumes:
+      # Plugin sockets - read-write to create socket
+      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:rw
+      # Plugin config - configuration file
+      - ${CLAUDE_HOME:-~/.claude-container}/config:/etc/plugins:ro
+      # Workspace - same as claude container for git operations
+      - ${PROJECT_DIR:-.}:/workspace
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GH_TOKEN=${GH_TOKEN:-${GITHUB_TOKEN}}
+      - PLUGIN_SOCKET=/run/plugins/git.sock
+      - PLUGIN_CONFIG=/etc/plugins/git.yaml
+    working_dir: /workspace
+    networks:
+      - plugin-net
+    # Capability for memory locking (credentials)
     cap_add:
       - IPC_LOCK
-    read_only: true
-    tmpfs:
-      - /tmp:size=10M,mode=1777
+    # Health check
     healthcheck:
-      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/agent/cmd.sock'); s.close()"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/plugins/git.sock'); s.close()"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 5s
 
-  claude:
-    build:
-      context: .
-      dockerfile: Containerfile
-    container_name: claude-code
-    stdin_open: true
-    tty: true
-    environment:
-      - AGENT_SOCKET=/run/agent/cmd.sock
-    volumes:
-      # Same path in both containers so git commands work
-      - ${PROJECT_DIR:-.}:/workspace:Z
-      - ${ANTHROPIC_KEY_FILE:-~/.anthropic_key}:/home/claude/.anthropic_key:ro
-      - agent-socket:/run/agent:ro
-    working_dir: /workspace
-    depends_on:
-      command-agent:
-        condition: service_healthy
-
-volumes:
-  agent-socket:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: size=1M,uid=1000,gid=1000
+networks:
+  plugin-net:
+    driver: bridge
