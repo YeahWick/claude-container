@@ -15,13 +15,16 @@ import socket
 import struct
 import sys
 
-# Socket path from environment variable for concurrent instance support
-# Falls back to default for backwards compatibility
-SOCKET_PATH = os.environ.get('CLI_SOCKET', '/run/plugins/cli-default.sock')
 MAX_MSG = 64 * 1024
 
 
 def main():
+    # Socket path must be set via environment for concurrent instance support
+    socket_path = os.environ.get('CLI_SOCKET')
+    if not socket_path:
+        print('error: CLI_SOCKET environment variable not set', file=sys.stderr)
+        return 1
+
     tool = os.path.basename(sys.argv[0])
     args = sys.argv[1:]
 
@@ -30,8 +33,6 @@ def main():
         'args': args,
         'cwd': os.getcwd(),
     }
-
-    socket_path = SOCKET_PATH
 
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

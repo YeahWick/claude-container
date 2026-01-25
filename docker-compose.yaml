@@ -8,8 +8,8 @@
 # To add tools: Update create_default_caller() in plugins/cli/tool-caller.py
 #
 # Concurrent Instances:
-# - Set COMPOSE_PROJECT_NAME to run multiple instances (e.g., "claude-abc123")
-# - Set INSTANCE_ID for unique socket names (e.g., "abc123")
+# - INSTANCE_ID must be set (run.sh generates from PROJECT_DIR hash)
+# - COMPOSE_PROJECT_NAME namespaces containers (e.g., "claude-abc123")
 # - Each PROJECT_DIR gets a unique instance based on path hash
 # - Container names are auto-generated as {project}_{service}_{replica}
 
@@ -32,8 +32,8 @@ services:
     environment:
       - PATH=/home/claude/bin:/usr/local/bin:/usr/bin:/bin
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # Socket path includes instance ID for concurrent support
-      - CLI_SOCKET=/run/plugins/cli-${INSTANCE_ID:-default}.sock
+      # Socket path includes instance ID (required, no default)
+      - CLI_SOCKET=/run/plugins/cli-${INSTANCE_ID}.sock
     working_dir: /workspace
     depends_on:
       - cli-server
@@ -52,11 +52,11 @@ services:
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GH_TOKEN=${GH_TOKEN:-${GITHUB_TOKEN}}
-      # Socket path includes instance ID for concurrent support
-      - CLI_SOCKET=/run/plugins/cli-${INSTANCE_ID:-default}.sock
+      # Socket path includes instance ID (required, no default)
+      - CLI_SOCKET=/run/plugins/cli-${INSTANCE_ID}.sock
     working_dir: /workspace
     healthcheck:
-      test: ["CMD", "python3", "-c", "import os; import socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ.get('CLI_SOCKET', '/run/plugins/cli-default.sock')); s.close()"]
+      test: ["CMD", "python3", "-c", "import os; import socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ['CLI_SOCKET']); s.close()"]
       interval: 10s
       timeout: 5s
       retries: 3
