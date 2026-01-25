@@ -151,6 +151,180 @@ The overhead of multiple sockets is minimal on modern systems, and container ove
 
 ---
 
+## Dynamic Plugin Discovery
+
+A key feature of v2 is the ability to **add new tools to a running Claude container** without restarting it. This is achieved by using host-mounted volumes for both the CLI wrappers and socket files.
+
+### Host Volume Architecture
+
+```
+HOST FILESYSTEM                         CONTAINERS
+───────────────                         ──────────
+
+~/.claude-container/
+├── cli/                    ──────────► Claude: /home/claude/bin (in PATH)
+│   ├── plugin-client                   (read-only mount)
+│   ├── git
+│   ├── gh
+│   └── npm                 ← Add new wrappers here!
+│
+├── sockets/                ──────────► Claude: /run/plugins (read-only)
+│   ├── git.sock                        Plugins: /run/plugins (read-write)
+│   ├── gh.sock
+│   └── npm.sock            ← New plugins create sockets here!
+│
+└── config/                 ──────────► Plugins: /etc/plugins (read-only)
+    ├── git.yaml
+    ├── gh.yaml
+    └── npm.yaml            ← Add new configs here!
+```
+
+### Docker Compose Configuration
+
+```yaml
+volumes:
+  # No named volumes - use host paths for hot-plug capability
+
+services:
+  claude:
+    image: claude-code:v2
+    volumes:
+      # CLI wrappers - host directory mounted into PATH
+      - ${CLAUDE_HOME:-~/.claude-container}/cli:/home/claude/bin:ro
+      # Sockets - read-only access to plugin sockets
+      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:ro
+      # Workspace
+      - ${PROJECT_DIR:-.}:/workspace
+    environment:
+      - PATH=/home/claude/bin:/usr/local/bin:/usr/bin:/bin
+
+  git-plugin:
+    image: plugin-git:v2
+    volumes:
+      # Sockets - read-write to create socket file
+      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:rw
+      # Config - plugin configuration
+      - ${CLAUDE_HOME:-~/.claude-container}/config:/etc/plugins:ro
+      # Workspace - same as claude container
+      - ${PROJECT_DIR:-.}:/workspace
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+
+  # Add more plugins as needed...
+```
+
+### Wrapper Script with Graceful Fallback
+
+Wrappers detect if their plugin is available:
+
+```bash
+#!/bin/sh
+# /home/claude/bin/git (host: ~/.claude-container/cli/git)
+
+SOCKET="/run/plugins/git.sock"
+TOOL="git"
+
+# Check if plugin socket exists
+if [ ! -S "$SOCKET" ]; then
+    echo "error: $TOOL plugin not available" >&2
+    echo "hint: start the $TOOL-plugin container" >&2
+    exit 127
+fi
+
+# Forward to plugin
+exec /home/claude/bin/plugin-client "$SOCKET" "$TOOL" "$@"
+```
+
+### Adding a New Plugin at Runtime
+
+**Step 1: Create the wrapper script on host**
+```bash
+# On host machine
+cat > ~/.claude-container/cli/npm << 'EOF'
+#!/bin/sh
+SOCKET="/run/plugins/npm.sock"
+TOOL="npm"
+if [ ! -S "$SOCKET" ]; then
+    echo "error: $TOOL plugin not available" >&2
+    exit 127
+fi
+exec /home/claude/bin/plugin-client "$SOCKET" "$TOOL" "$@"
+EOF
+chmod +x ~/.claude-container/cli/npm
+```
+
+**Step 2: Create plugin config on host**
+```bash
+cat > ~/.claude-container/config/npm.yaml << 'EOF'
+plugin: npm
+version: 1
+rules:
+  blocked_commands:
+    - publish
+    - unpublish
+    - adduser
+limits:
+  timeout_seconds: 300
+EOF
+```
+
+**Step 3: Start the plugin container**
+```bash
+docker compose up -d npm-plugin
+# Socket appears at ~/.claude-container/sockets/npm.sock
+```
+
+**Step 4: Use immediately in Claude (no restart needed!)**
+```bash
+# Inside Claude container
+$ npm install lodash
+# Works! Plugin was added while container was running
+```
+
+### Plugin Availability Check
+
+The `plugin-client` can list available plugins:
+
+```bash
+$ plugin-client --list
+Available plugins:
+  git     /run/plugins/git.sock     ✓ connected
+  gh      /run/plugins/gh.sock      ✓ connected
+  npm     /run/plugins/npm.sock     ✗ not available
+  curl    /run/plugins/curl.sock    ✗ not available
+```
+
+### Directory Permissions
+
+```bash
+# Host setup script
+mkdir -p ~/.claude-container/{cli,sockets,config}
+
+# CLI directory - readable by container user
+chmod 755 ~/.claude-container/cli
+
+# Sockets directory - writable by plugin containers
+# Use same UID/GID as container users (typically 1000)
+chmod 770 ~/.claude-container/sockets
+chown 1000:1000 ~/.claude-container/sockets
+
+# Config directory - readable by plugins
+chmod 755 ~/.claude-container/config
+```
+
+### Benefits of Host Volumes
+
+| Feature | Named Volumes | Host Volumes |
+|---------|---------------|--------------|
+| Add new CLI wrappers at runtime | ✗ | ✓ |
+| Add new plugins at runtime | ✓ | ✓ |
+| Edit configs without rebuild | ✗ | ✓ |
+| Inspect files from host | Difficult | Easy |
+| Backup/version control | Manual export | Direct |
+| Works across container restarts | ✓ | ✓ |
+
+---
+
 ## Protocol Specification
 
 ### Transport
@@ -319,19 +493,16 @@ exec /usr/local/bin/plugin-client "$SOCKET" "$@"
 
 ## Directory Structure
 
+### Source Repository (v2/)
+
 ```
 v2/
 ├── SPEC.md                    # This document
 ├── README.md                  # Quick start guide
 ├── docker-compose.yaml        # Container orchestration
 │
-├── claude/                    # Claude container
-│   ├── Containerfile
-│   └── bin/
-│       ├── plugin-client      # Universal socket client
-│       ├── git                # Wrapper → git.sock
-│       ├── gh                 # Wrapper → gh.sock
-│       └── curl               # Wrapper → curl.sock
+├── claude/                    # Claude container image
+│   └── Containerfile
 │
 ├── plugins/                   # Plugin implementations
 │   ├── base/                  # Shared plugin library
@@ -340,29 +511,76 @@ v2/
 │   │   ├── protocol.py        # Message encoding/decoding
 │   │   └── security.py        # Credential handling, mlock
 │   │
-│   ├── git/                   # Git plugin
-│   │   ├── Containerfile
-│   │   ├── plugin.py          # Git-specific logic
-│   │   └── config.yaml        # Default config
-│   │
-│   ├── gh/                    # GitHub CLI plugin
-│   │   ├── Containerfile
-│   │   ├── plugin.py
-│   │   └── config.yaml
-│   │
-│   └── curl/                  # Curl plugin
+│   └── git/                   # Git plugin
 │       ├── Containerfile
-│       ├── plugin.py
-│       └── config.yaml
+│       ├── plugin.py          # Git-specific logic
+│       └── config.yaml        # Default config
 │
-├── config/                    # User config (mounted)
-│   ├── git.yaml
-│   ├── gh.yaml
-│   └── curl.yaml
+├── cli/                       # CLI wrappers (copied to host on install)
+│   ├── plugin-client          # Universal socket client
+│   └── git                    # Git wrapper template
+│
+├── config/                    # Default configs (copied to host on install)
+│   └── git.yaml
 │
 └── scripts/
+    ├── install.sh             # First-time setup
     ├── run.sh                 # Launcher
     └── add-plugin.sh          # Helper to add new plugins
+```
+
+### Host Runtime Directory (~/.claude-container/)
+
+Created by `install.sh`, mounted into containers:
+
+```
+~/.claude-container/
+├── cli/                       # Mounted as /home/claude/bin (read-only)
+│   ├── plugin-client          # Socket client binary
+│   ├── git                    # git → git.sock
+│   ├── gh                     # gh → gh.sock (add later)
+│   └── ...                    # Add more wrappers anytime!
+│
+├── sockets/                   # Mounted as /run/plugins
+│   ├── git.sock               # Created by git-plugin container
+│   └── ...                    # New sockets appear as plugins start
+│
+└── config/                    # Mounted as /etc/plugins (read-only)
+    ├── git.yaml               # Git plugin configuration
+    └── ...                    # Add more configs anytime!
+```
+
+### Install Script
+
+```bash
+#!/bin/bash
+# scripts/install.sh - First-time setup
+
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude-container}"
+
+echo "Setting up Claude Container v2..."
+
+# Create host directories
+mkdir -p "$CLAUDE_HOME"/{cli,sockets,config}
+
+# Set permissions (UID 1000 = container user)
+chmod 755 "$CLAUDE_HOME"/cli
+chmod 770 "$CLAUDE_HOME"/sockets
+chmod 755 "$CLAUDE_HOME"/config
+
+# Copy default CLI wrappers
+cp -r cli/* "$CLAUDE_HOME"/cli/
+chmod +x "$CLAUDE_HOME"/cli/*
+
+# Copy default configs
+cp -r config/* "$CLAUDE_HOME"/config/
+
+echo "Installed to $CLAUDE_HOME"
+echo ""
+echo "To add a new tool:"
+echo "  1. Add wrapper:  cp my-tool $CLAUDE_HOME/cli/"
+echo "  2. Add config:   cp my-tool.yaml $CLAUDE_HOME/config/"
+echo "  3. Start plugin: docker compose up -d my-tool-plugin"
 ```
 
 ---
