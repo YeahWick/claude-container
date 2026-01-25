@@ -14,3 +14,13 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# Runtime directories (created by install.sh)
+sockets/
+*.sock
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo

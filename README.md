@@ -1,127 +1,244 @@
-# Claude Code Container
+# Claude Container v2
 
-Run Claude Code CLI in a containerized environment with secure git/gh access.
+A secure, plugin-based container architecture for running Claude Code with controlled access to development tools.
 
-## Features
+## Architecture
 
-- **Isolated environment**: Claude Code runs in a container
-- **Secure credentials**: GitHub token stored in locked memory, never exposed to Claude
-- **Branch protection**: Block pushes to main/master (configurable)
-- **Same CLI**: Use `git` and `gh` commands normally - they're proxied securely
+Claude Container v2 uses a **socket-based plugin system** where each tool runs as an independent service:
 
-## Requirements
-
-- Podman or Docker
-- podman-compose or docker-compose
-
-```bash
-# macOS
-brew install podman podman-compose
-podman machine init && podman machine start
-
-# Fedora/RHEL
-sudo dnf install podman podman-compose
-
-# Ubuntu/Debian
-sudo apt install podman
-pip install podman-compose
 ```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        HOST SYSTEM                                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────────┐     ┌──────────────────────────────────┐  │
+│  │   Claude Container   │     │      Plugin Containers           │  │
+│  │                      │     │                                  │  │
+│  │  ┌────────────────┐  │     │  ┌──────────┐                   │  │
+│  │  │ Wrapper: git   │──┼─────┼─►│ git-tool │                   │  │
+│  │  └────────────────┘  │     │  │ plugin   │                   │  │
+│  │                      │     │  └──────────┘                   │  │
+│  │  /run/plugins/*.sock │     │                                  │  │
+│  └──────────────────────┘     └──────────────────────────────────┘  │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Features
+
+- **One socket per tool** - Each plugin has its own Unix socket for isolation
+- **Plugin-based extensibility** - Easy to add new tools without modifying core system
+- **Git hook enforcement** - Branch protection enforced by git itself via hooks
+- **Secure credential handling** - Credentials locked in memory, never exposed
+- **Hot-pluggable** - Add new plugins without restarting Claude
 
 ## Quick Start
 
-1. Create your API key file:
-   ```bash
-   echo 'your_anthropic_api_key' > ~/.anthropic_key
-   ```
+### Prerequisites
 
-2. Set your GitHub token:
-   ```bash
-   export GITHUB_TOKEN=ghp_your_token_here
-   ```
+- Docker or Podman with Docker Compose
+- GitHub token (optional, for authenticated git operations)
 
-3. Run Claude Code:
-   ```bash
-   ./run.sh
-   ```
-
-## How It Works
-
-```
-┌─────────────────────┐     ┌──────────────────────┐
-│  Claude Container   │     │   Command Agent      │
-│                     │     │                      │
-│  git push origin x  │────▶│  Validates branch    │
-│  (CLI wrapper)      │     │  Injects credentials │
-│                     │◀────│  Runs real git       │
-│  Gets: output only  │     │  Returns output      │
-└─────────────────────┘     └──────────────────────┘
-        │                            │
-        ▼                            ▼
-   Your workspace              GitHub token
-   (mounted)                   (locked memory)
-```
-
-The `git` and `gh` commands in the Claude container are wrappers that forward to the command-agent via Unix socket. The agent:
-- Validates operations (branch protection)
-- Injects credentials
-- Executes the real command
-- Returns output (never credentials)
-
-## Configuration
-
-Copy `.env.example` to `.env` and configure:
+### Installation
 
 ```bash
-# Required
-GITHUB_TOKEN=ghp_your_token
+# Clone the repository
+git clone https://github.com/YeahWick/claude-container.git
+cd claude-container
 
-# Optional - branch protection
-BLOCKED_BRANCHES=["main","master"]
-ALLOWED_BRANCH_PATTERNS=["claude/*","feature/*"]
+# Install (creates ~/.claude-container directory)
+./scripts/install.sh
+
+# Set your API keys
+export ANTHROPIC_API_KEY=your_key
+export GITHUB_TOKEN=your_github_token
+
+# Build containers
+docker compose build
+
+# Run Claude
+./scripts/run.sh
 ```
 
-## Commands
+### Usage
 
 ```bash
-./run.sh              # Start Claude Code
-./run.sh --build      # Rebuild containers
-./run.sh --stop       # Stop containers
-./run.sh --shell      # Open shell in running container
-./run.sh --logs       # View command-agent logs
-./run.sh --status     # Show container status
-./run.sh --help       # Show help
+# Start Claude interactively
+./scripts/run.sh
+
+# Start all containers in background
+./scripts/run.sh start
+
+# Check status
+./scripts/run.sh status
+
+# View logs
+./scripts/run.sh logs git-plugin
+
+# Stop all containers
+./scripts/run.sh stop
 ```
 
-## Inside the Container
+## Git Plugin
 
+The git plugin provides controlled git access with:
+
+### Branch Protection
+
+Protected branches cannot be pushed to directly:
+- `main`, `master`
+- `release/*`, `production`
+
+Claude must create feature branches matching allowed patterns:
+- `claude/*`
+- `feature/*`, `fix/*`, `bugfix/*`, `hotfix/*`
+
+### Git Hook Enforcement
+
+The plugin uses **git hooks** for defense-in-depth enforcement:
+
+1. **pre-push hook** - Blocks pushes to protected branches
+2. **pre-commit hook** - Placeholder for future checks
+3. **commit-msg hook** - Placeholder for message validation
+
+Hooks are automatically installed when repositories are cloned or initialized.
+
+### Blocked Operations
+
+- Force push (`git push -f`)
+- Remote branch deletion (`git push -d`)
+- Global config changes (`git config --global`)
+- Remote URL modification
+
+### Configuration
+
+Edit `~/.claude-container/config/git.yaml`:
+
+```yaml
+rules:
+  blocked_branches:
+    - main
+    - master
+  allowed_branch_patterns:
+    - claude/*
+    - feature/*
+  allow_force_push: false
+  allow_delete_remote: false
+```
+
+## Adding New Plugins
+
+1. **Create wrapper script**:
 ```bash
-# These work normally - they're proxied to the agent
-git status
-git push origin my-branch
-git pull
-gh pr create
-gh issue list
-
-# Check agent status
-agent-status
+cat > ~/.claude-container/cli/npm << 'EOF'
+#!/bin/sh
+SOCKET="/run/plugins/npm.sock"
+if [ ! -S "$SOCKET" ]; then
+    echo "error: npm plugin not available" >&2
+    exit 127
+fi
+exec plugin-client "$SOCKET" "$@"
+EOF
+chmod +x ~/.claude-container/cli/npm
 ```
 
-## Branch Protection
-
-By default, pushes to `main` and `master` are blocked. Configure with:
-
+2. **Create plugin configuration**:
 ```bash
-# Block specific branches
-BLOCKED_BRANCHES=["main","master","production"]
-
-# Or use allowlist mode - only these patterns allowed
-ALLOWED_BRANCH_PATTERNS=["claude/*","feature/*","fix/*"]
+cat > ~/.claude-container/config/npm.yaml << 'EOF'
+plugin: npm
+version: 1
+rules:
+  blocked_subcommands:
+    - publish
+    - unpublish
+EOF
 ```
 
-## Security
+3. **Add service to docker-compose.yaml**
 
-- **No credential exposure**: GitHub token stored in mlock'd memory, cleared from environment
-- **Process isolation**: Command agent runs separately with minimal privileges
-- **SO_PEERCRED**: Caller verification via kernel
-- **Read-only container**: Agent container is read-only
-- **No network to Claude**: Claude container can't reach the internet directly
+4. **Start the plugin**:
+```bash
+docker compose up -d npm-plugin
+```
+
+The plugin is immediately available - no restart needed!
+
+## Directory Structure
+
+```
+claude-container/
+├── SPEC.md                    # Full specification
+├── docker-compose.yaml        # Container orchestration
+│
+├── claude/                    # Claude container
+│   └── Containerfile
+│
+├── plugins/                   # Plugin implementations
+│   ├── base/                  # Shared plugin library
+│   │   ├── protocol.py        # Socket protocol
+│   │   ├── server.py          # Plugin server base
+│   │   └── security.py        # Credential handling
+│   │
+│   └── git/                   # Git plugin
+│       ├── Containerfile
+│       ├── plugin.py          # Git-specific logic
+│       └── main.py            # Entry point
+│
+├── cli/                       # CLI wrappers
+│   ├── plugin-client          # Universal socket client
+│   └── git                    # Git wrapper
+│
+├── config/                    # Default configurations
+│   └── git.yaml
+│
+└── scripts/
+    ├── install.sh             # First-time setup
+    └── run.sh                 # Launcher
+```
+
+## Security Model
+
+### Credential Protection
+- Loaded from environment at startup
+- Locked in memory with `mlock()` to prevent swapping
+- Environment variables cleared after loading
+- Never included in responses
+
+### Socket Security
+- Unix domain sockets (no network exposure)
+- File permissions restrict access
+- Peer credentials verified via `SO_PEERCRED`
+
+### Command Validation
+- Pre-execution validation in plugin
+- Git hooks for defense-in-depth
+- Detailed error messages for blocked operations
+
+## Protocol
+
+Plugins communicate via length-prefixed JSON over Unix sockets:
+
+**Request**:
+```json
+{
+  "action": "exec",
+  "args": ["push", "origin", "claude/feature"],
+  "cwd": "/workspace",
+  "env": {}
+}
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "exit_code": 0,
+  "stdout": "...",
+  "stderr": "",
+  "error": null
+}
+```
+
+## License
+
+MIT
