@@ -6,6 +6,9 @@ and executes them with appropriate restrictions.
 
 All validation and restrictions are enforced here, keeping the
 client wrapper as simple as possible.
+
+Uses the ToolCaller module for actual tool invocation, which allows
+injecting permission restrictions and audit logging.
 """
 
 import json
@@ -14,9 +17,14 @@ import os
 import signal
 import socket
 import struct
-import subprocess
+import sys
 import threading
 from pathlib import Path
+
+# Add app directory to path for imports
+sys.path.insert(0, '/app')
+
+from tool_caller import ToolCaller, ToolConfig, create_default_caller
 
 logger = logging.getLogger(__name__)
 
@@ -25,25 +33,28 @@ SOCKET_PATH = '/run/plugins/cli.sock'
 WORKSPACE = '/workspace'
 MAX_MSG = 64 * 1024
 
-# Tool configurations - add new tools here
-ALLOWED_TOOLS = {
-    'git': {
-        'binary': '/usr/bin/git',
-        'timeout': 300,
-    },
-    # Easy to add more tools:
-    # 'npm': {'binary': '/usr/bin/npm', 'timeout': 600},
-    # 'cargo': {'binary': '/usr/bin/cargo', 'timeout': 600},
-}
-
 
 class CLIServer:
-    """Simple CLI server that forwards commands to tools."""
+    """Simple CLI server that forwards commands to tools.
 
-    def __init__(self, socket_path: str = SOCKET_PATH):
+    Uses ToolCaller for actual tool invocation, allowing permission
+    restrictions to be injected.
+    """
+
+    def __init__(
+        self,
+        socket_path: str = SOCKET_PATH,
+        tool_caller: ToolCaller | None = None,
+    ):
         self.socket_path = socket_path
         self._running = False
         self._server: socket.socket | None = None
+
+        # Use provided caller or create default
+        if tool_caller is None:
+            self._caller = create_default_caller(workspace=WORKSPACE)
+        else:
+            self._caller = tool_caller
 
     def start(self):
         """Start the server."""
@@ -152,67 +163,41 @@ class CLIServer:
             logger.error(f'Write error: {e}')
 
     def _process(self, request: dict) -> dict:
-        """Process a request and return response."""
+        """Process a request and return response.
+
+        Delegates to ToolCaller for actual execution, which handles
+        permission checks and tool invocation.
+        """
         tool = request.get('tool', '')
         args = request.get('args', [])
         cwd = request.get('cwd', WORKSPACE)
 
-        # Check tool is allowed
-        if tool not in ALLOWED_TOOLS:
-            return {
-                'exit_code': 1,
-                'stdout': '',
-                'stderr': '',
-                'error': f"Unknown tool: {tool}",
-            }
+        # Delegate to tool caller
+        result = self._caller.call(tool, args, cwd)
+        return result.to_dict()
 
-        config = ALLOWED_TOOLS[tool]
-        binary = config['binary']
-        timeout = config.get('timeout', 300)
 
-        # Validate binary exists
-        if not Path(binary).exists():
-            return {
-                'exit_code': 127,
-                'stdout': '',
-                'stderr': '',
-                'error': f"Tool not installed: {tool}",
-            }
+def create_tool_caller() -> ToolCaller:
+    """Create the tool caller with appropriate configuration.
 
-        # Validate cwd
-        cwd_path = Path(cwd)
-        if not cwd_path.exists():
-            cwd = WORKSPACE
+    Override this function or set TOOL_CALLER_MODE environment variable
+    to customize permission restrictions.
 
-        # Execute command
-        try:
-            cmd = [binary] + args
-            result = subprocess.run(
-                cmd,
-                cwd=cwd,
-                capture_output=True,
-                timeout=timeout,
-                env=os.environ.copy(),
-            )
-            return {
-                'exit_code': result.returncode,
-                'stdout': result.stdout.decode('utf-8', errors='replace'),
-                'stderr': result.stderr.decode('utf-8', errors='replace'),
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                'exit_code': 124,
-                'stdout': '',
-                'stderr': f'Command timed out after {timeout}s',
-                'error': 'Timeout',
-            }
-        except Exception as e:
-            return {
-                'exit_code': 1,
-                'stdout': '',
-                'stderr': str(e),
-                'error': f'Execution failed: {e}',
-            }
+    Modes:
+        - 'default': No restrictions, calls tools as-is
+        - 'restricted': Workspace enforcement and subcommand validation
+    """
+    from tool_caller import create_default_caller, create_restricted_caller
+
+    mode = os.environ.get('TOOL_CALLER_MODE', 'default')
+    workspace = os.environ.get('WORKSPACE', WORKSPACE)
+
+    if mode == 'restricted':
+        logger.info('Using restricted tool caller')
+        return create_restricted_caller(workspace)
+    else:
+        logger.info('Using default tool caller')
+        return create_default_caller(workspace)
 
 
 def main():
@@ -222,7 +207,8 @@ def main():
     )
 
     socket_path = os.environ.get('CLI_SOCKET', SOCKET_PATH)
-    server = CLIServer(socket_path)
+    tool_caller = create_tool_caller()
+    server = CLIServer(socket_path, tool_caller=tool_caller)
 
     logger.info('Starting CLI server')
     server.start()
