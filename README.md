@@ -1,10 +1,10 @@
 # Claude Container v2
 
-A secure, plugin-based container architecture for running Claude Code with controlled access to development tools.
+A minimal container architecture for running Claude Code with controlled access to development tools.
 
 ## Architecture
 
-Claude Container v2 uses a **socket-based plugin system** where each tool runs as an independent service:
+Claude Container uses a simple **client-server boundary** where the CLI wrapper forwards all commands to a unified server:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -12,13 +12,14 @@ Claude Container v2 uses a **socket-based plugin system** where each tool runs a
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  ┌──────────────────────┐     ┌──────────────────────────────────┐  │
-│  │   Claude Container   │     │      Plugin Containers           │  │
+│  │   Claude Container   │     │        CLI Server                │  │
 │  │                      │     │                                  │  │
-│  │  ┌────────────────┐  │     │  ┌──────────┐                   │  │
-│  │  │ Wrapper: git   │──┼─────┼─►│ git-tool │                   │  │
-│  │  └────────────────┘  │     │  │ plugin   │                   │  │
-│  │                      │     │  └──────────┘                   │  │
-│  │  /run/plugins/*.sock │     │                                  │  │
+│  │   git push ...       │     │   Receives: {tool, args, cwd}    │  │
+│  │        ↓             │     │                                  │  │
+│  │   cli-wrapper  ──────┼─────┼─► Executes tool                  │  │
+│  │                      │     │   Returns: {stdout, stderr, rc}  │  │
+│  │   /run/plugins/      │     │                                  │  │
+│  │     cli.sock         │     │   All restrictions enforced here │  │
 │  └──────────────────────┘     └──────────────────────────────────┘  │
 │                                                                      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -26,11 +27,10 @@ Claude Container v2 uses a **socket-based plugin system** where each tool runs a
 
 ### Key Features
 
-- **One socket per tool** - Each plugin has its own Unix socket for isolation
-- **Plugin-based extensibility** - Easy to add new tools without modifying core system
-- **Git hook enforcement** - Branch protection enforced by git itself via hooks
-- **Secure credential handling** - Credentials locked in memory, never exposed
-- **Hot-pluggable** - Add new plugins without restarting Claude
+- **Minimal client** - Simple wrapper forwards everything to server
+- **Clean boundary** - All validation/restrictions enforced server-side
+- **Easy extensibility** - Add tools with symlink + config update
+- **Single socket** - One server handles all tool requests
 
 ## Quick Start
 
@@ -72,172 +72,101 @@ docker compose build
 # Check status
 ./scripts/run.sh status
 
-# View logs
-./scripts/run.sh logs git-plugin
-
 # Stop all containers
 ./scripts/run.sh stop
 ```
 
-## Git Plugin
+## Adding New Tools
 
-The git plugin provides controlled git access with:
+Adding a new tool requires just two steps:
 
-### Branch Protection
+### 1. Create symlink
 
-Protected branches cannot be pushed to directly:
-- `main`, `master`
-- `release/*`, `production`
-
-Claude must create feature branches matching allowed patterns:
-- `claude/*`
-- `feature/*`, `fix/*`, `bugfix/*`, `hotfix/*`
-
-### Git Hook Enforcement
-
-The plugin uses **git hooks** for defense-in-depth enforcement:
-
-1. **pre-push hook** - Blocks pushes to protected branches
-2. **pre-commit hook** - Placeholder for future checks
-3. **commit-msg hook** - Placeholder for message validation
-
-Hooks are automatically installed when repositories are cloned or initialized.
-
-### Blocked Operations
-
-- Force push (`git push -f`)
-- Remote branch deletion (`git push -d`)
-- Global config changes (`git config --global`)
-- Remote URL modification
-
-### Configuration
-
-Edit `~/.claude-container/config/git.yaml`:
-
-```yaml
-rules:
-  blocked_branches:
-    - main
-    - master
-  allowed_branch_patterns:
-    - claude/*
-    - feature/*
-  allow_force_push: false
-  allow_delete_remote: false
-```
-
-## Adding New Plugins
-
-1. **Create wrapper script**:
 ```bash
-cat > ~/.claude-container/cli/npm << 'EOF'
-#!/bin/sh
-SOCKET="/run/plugins/npm.sock"
-if [ ! -S "$SOCKET" ]; then
-    echo "error: npm plugin not available" >&2
-    exit 127
-fi
-exec plugin-client "$SOCKET" "$@"
-EOF
-chmod +x ~/.claude-container/cli/npm
+cd ~/.claude-container/cli
+ln -s cli-wrapper npm
+ln -s cli-wrapper cargo
 ```
 
-2. **Create plugin configuration**:
-```bash
-cat > ~/.claude-container/config/npm.yaml << 'EOF'
-plugin: npm
-version: 1
-rules:
-  blocked_subcommands:
-    - publish
-    - unpublish
-EOF
+### 2. Update server config
+
+Edit `plugins/cli/server.py` and add to `ALLOWED_TOOLS`:
+
+```python
+ALLOWED_TOOLS = {
+    'git': {'binary': '/usr/bin/git', 'timeout': 300},
+    'npm': {'binary': '/usr/bin/npm', 'timeout': 600},
+    'cargo': {'binary': '/usr/bin/cargo', 'timeout': 600},
+}
 ```
 
-3. **Add service to docker-compose.yaml**
-
-4. **Start the plugin**:
-```bash
-docker compose up -d npm-plugin
-```
-
-The plugin is immediately available - no restart needed!
+Then rebuild the CLI server container. The new tool is immediately available.
 
 ## Directory Structure
 
 ```
 claude-container/
-├── SPEC.md                    # Full specification
 ├── docker-compose.yaml        # Container orchestration
 │
 ├── claude/                    # Claude container
 │   └── Containerfile
 │
-├── plugins/                   # Plugin implementations
-│   ├── base/                  # Shared plugin library
-│   │   ├── protocol.py        # Socket protocol
-│   │   ├── server.py          # Plugin server base
-│   │   └── security.py        # Credential handling
-│   │
-│   └── git/                   # Git plugin
+├── plugins/
+│   └── cli/                   # Unified CLI server
 │       ├── Containerfile
-│       ├── plugin.py          # Git-specific logic
-│       └── main.py            # Entry point
+│       └── server.py          # Tool execution + restrictions
 │
-├── cli/                       # CLI wrappers
-│   ├── plugin-client          # Universal socket client
-│   └── git                    # Git wrapper
-│
-├── config/                    # Default configurations
-│   └── git.yaml
+├── cli/                       # CLI wrappers (mounted into Claude)
+│   ├── cli-wrapper            # Minimal client (~70 lines)
+│   └── git -> cli-wrapper     # Symlinks for each tool
 │
 └── scripts/
     ├── install.sh             # First-time setup
     └── run.sh                 # Launcher
 ```
 
-## Security Model
-
-### Credential Protection
-- Loaded from environment at startup
-- Locked in memory with `mlock()` to prevent swapping
-- Environment variables cleared after loading
-- Never included in responses
-
-### Socket Security
-- Unix domain sockets (no network exposure)
-- File permissions restrict access
-- Peer credentials verified via `SO_PEERCRED`
-
-### Command Validation
-- Pre-execution validation in plugin
-- Git hooks for defense-in-depth
-- Detailed error messages for blocked operations
-
 ## Protocol
 
-Plugins communicate via length-prefixed JSON over Unix sockets:
+Client sends requests via Unix socket using length-prefixed JSON:
 
 **Request**:
 ```json
 {
-  "action": "exec",
-  "args": ["push", "origin", "claude/feature"],
-  "cwd": "/workspace",
-  "env": {}
+  "tool": "git",
+  "args": ["push", "origin", "feature/x"],
+  "cwd": "/workspace"
 }
 ```
 
 **Response**:
 ```json
 {
-  "success": true,
   "exit_code": 0,
   "stdout": "...",
-  "stderr": "",
-  "error": null
+  "stderr": ""
 }
 ```
+
+## Security Model
+
+The architecture creates a clear security boundary:
+
+- **Claude container**: Minimal, only has wrapper scripts
+- **CLI server**: Handles execution with all restrictions
+
+### Current Restrictions
+
+The server validates:
+- Tool is in `ALLOWED_TOOLS` whitelist
+- Binary exists on the system
+
+### Planned Restrictions
+
+Additional server-side restrictions can be added:
+- Command argument validation
+- Branch protection for git
+- Blocked subcommands per tool
+- Rate limiting
 
 ## License
 
