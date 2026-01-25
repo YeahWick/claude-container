@@ -2,6 +2,7 @@
 # Run script for Claude Container v2
 #
 # Starts the Claude container with all configured plugins.
+# Supports multiple concurrent instances via unique project names.
 
 set -e
 
@@ -12,6 +13,26 @@ CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude-container}"
 # Export for docker compose
 export CLAUDE_HOME
 export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
+
+# Generate instance ID from PROJECT_DIR hash for concurrent support
+# Uses first 8 characters of md5sum for uniqueness
+generate_instance_id() {
+    local path="$1"
+    # Normalize path and generate hash
+    local normalized_path
+    normalized_path="$(cd "$path" 2>/dev/null && pwd -P || echo "$path")"
+    echo -n "$normalized_path" | md5sum | cut -c1-8
+}
+
+# Get or generate instance ID
+if [ -z "$INSTANCE_ID" ]; then
+    INSTANCE_ID="$(generate_instance_id "$PROJECT_DIR")"
+fi
+export INSTANCE_ID
+
+# Set compose project name for container namespacing
+# This ensures containers from different instances don't conflict
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claude-$INSTANCE_ID}"
 
 # Check if installed
 if [ ! -d "$CLAUDE_HOME/cli" ]; then
@@ -41,18 +62,29 @@ ACTION="${1:-run}"
 
 case "$ACTION" in
     run)
-        # Start plugins first, then claude
-        echo "Starting plugin containers..."
-        docker compose up -d git-plugin
+        # Show instance info
+        echo "Instance: $INSTANCE_ID (from $PROJECT_DIR)"
+        echo "Project:  $COMPOSE_PROJECT_NAME"
+        echo ""
 
-        # Wait for plugin sockets
-        echo "Waiting for plugins..."
-        sleep 2
+        # Start CLI server first
+        echo "Starting CLI server..."
+        docker compose up -d cli-server
 
-        # Check if git socket is available
-        if [ ! -S "$CLAUDE_HOME/sockets/git.sock" ]; then
-            echo "Warning: git plugin socket not ready"
-            echo "Check: docker compose logs git-plugin"
+        # Wait for CLI socket
+        echo "Waiting for CLI server..."
+        SOCKET_FILE="$CLAUDE_HOME/sockets/cli-$INSTANCE_ID.sock"
+        for i in {1..10}; do
+            if [ -S "$SOCKET_FILE" ]; then
+                break
+            fi
+            sleep 0.5
+        done
+
+        # Check if CLI socket is available
+        if [ ! -S "$SOCKET_FILE" ]; then
+            echo "Warning: CLI server socket not ready at $SOCKET_FILE"
+            echo "Check: docker compose logs cli-server"
         fi
 
         # Start Claude interactively
@@ -61,25 +93,47 @@ case "$ACTION" in
         ;;
 
     start)
+        # Show instance info
+        echo "Instance: $INSTANCE_ID (from $PROJECT_DIR)"
+        echo "Project:  $COMPOSE_PROJECT_NAME"
+        echo ""
+
         # Start all containers in background
         echo "Starting all containers..."
         docker compose up -d
         echo ""
         echo "Containers started. Use 'docker compose logs -f' to view logs."
         echo "To connect to Claude: docker compose exec claude bash"
+        echo "Socket: $CLAUDE_HOME/sockets/cli-$INSTANCE_ID.sock"
         ;;
 
     stop)
+        echo "Instance: $INSTANCE_ID"
+        echo "Project:  $COMPOSE_PROJECT_NAME"
+        echo ""
         echo "Stopping all containers..."
         docker compose down
+
+        # Clean up instance socket
+        SOCKET_FILE="$CLAUDE_HOME/sockets/cli-$INSTANCE_ID.sock"
+        if [ -S "$SOCKET_FILE" ]; then
+            rm -f "$SOCKET_FILE"
+            echo "Removed socket: $SOCKET_FILE"
+        fi
         ;;
 
     status)
+        echo "Instance: $INSTANCE_ID"
+        echo "Project:  $COMPOSE_PROJECT_NAME"
+        echo ""
         echo "Container status:"
         docker compose ps
         echo ""
-        echo "Plugin sockets:"
-        ls -la "$CLAUDE_HOME/sockets/" 2>/dev/null || echo "  (none)"
+        echo "Instance socket:"
+        ls -la "$CLAUDE_HOME/sockets/cli-$INSTANCE_ID.sock" 2>/dev/null || echo "  (not found)"
+        echo ""
+        echo "All sockets:"
+        ls -la "$CLAUDE_HOME/sockets/"*.sock 2>/dev/null || echo "  (none)"
         ;;
 
     logs)

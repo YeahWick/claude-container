@@ -15,7 +15,9 @@ import socket
 import struct
 import sys
 
-SOCKET_PATH = '/run/plugins/cli.sock'
+# Socket path from environment variable for concurrent instance support
+# Falls back to default for backwards compatibility
+SOCKET_PATH = os.environ.get('CLI_SOCKET', '/run/plugins/cli-default.sock')
 MAX_MSG = 64 * 1024
 
 
@@ -29,9 +31,11 @@ def main():
         'cwd': os.getcwd(),
     }
 
+    socket_path = SOCKET_PATH
+
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(SOCKET_PATH)
+        sock.connect(socket_path)
 
         # Send request (length-prefixed JSON)
         payload = json.dumps(request).encode()

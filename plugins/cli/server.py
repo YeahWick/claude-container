@@ -28,8 +28,8 @@ from tool_caller import ToolCaller, ToolConfig, create_default_caller
 
 logger = logging.getLogger(__name__)
 
-# Configuration
-SOCKET_PATH = '/run/plugins/cli.sock'
+# Configuration - socket path from environment for concurrent instance support
+SOCKET_PATH = '/run/plugins/cli-default.sock'
 WORKSPACE = '/workspace'
 MAX_MSG = 64 * 1024
 
