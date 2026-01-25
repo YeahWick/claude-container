@@ -1,172 +1,181 @@
-# Claude Container v2
+# Claude Container
 
 A minimal container architecture for running Claude Code with controlled access to development tools.
 
 ## Architecture
 
-Claude Container uses a simple **client-server boundary** where the CLI wrapper forwards all commands to a unified server:
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                           HOST SYSTEM                                  │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  ┌─────────────────────────┐       ┌────────────────────────────────┐  │
+│  │    Claude Container     │       │      Tool Server Container     │  │
+│  │                         │       │                                │  │
+│  │  Claude Code CLI        │       │  setup.d/git.sh  (on start)    │  │
+│  │         ↓               │       │         ↓                      │  │
+│  │  git push origin main   │       │  restricted/git.sh (optional)  │  │
+│  │         ↓               │       │         ↓                      │  │
+│  │  /home/claude/bin/git   │ sock  │  /usr/bin/git push origin main │  │
+│  │  (cli-wrapper)  ────────┼───────┼→ (real binary)                 │  │
+│  │                         │       │                                │  │
+│  └─────────────────────────┘       └────────────────────────────────┘  │
+│           │                                    │                       │
+│           └──────────── /workspace ────────────┘                       │
+│                    (shared bind mount)                                 │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        HOST SYSTEM                                   │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌──────────────────────┐     ┌──────────────────────────────────┐  │
-│  │   Claude Container   │     │        CLI Server                │  │
-│  │                      │     │                                  │  │
-│  │   git push ...       │     │   Receives: {tool, args, cwd}    │  │
-│  │        ↓             │     │                                  │  │
-│  │   cli-wrapper  ──────┼─────┼─► Executes tool                  │  │
-│  │                      │     │   Returns: {stdout, stderr, rc}  │  │
-│  │   /run/plugins/      │     │                                  │  │
-│  │     cli.sock         │     │   All restrictions enforced here │  │
-│  └──────────────────────┘     └──────────────────────────────────┘  │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-```
+### Containers
+
+| Container | Purpose | Dockerfile |
+|-----------|---------|------------|
+| **claude** | Runs Claude Code CLI with wrapper scripts | `claude/Containerfile` |
+| **cli-server** | Executes tools with optional restrictions | `plugins/cli/Containerfile` |
 
 ### Key Features
 
-- **Minimal client** - Simple wrapper forwards everything to server
-- **Clean boundary** - All validation/restrictions enforced server-side
-- **Easy extensibility** - Add tools with symlink + config update
-- **Single socket** - One server handles all tool requests
+- **Minimal client** - Claude container only has lightweight wrappers
+- **Server-side control** - All tool execution happens in the tool server
+- **Per-tool setup** - `setup.d/{tool}.sh` scripts run at container start
+- **Per-tool restrictions** - `restricted/{tool}.sh` wrappers intercept calls
+- **Shared workspace** - Both containers see the same `/workspace` via bind mount
 
 ## Quick Start
 
-### Prerequisites
-
-- Docker or Podman with Docker Compose
-- GitHub token (optional, for authenticated git operations)
-
-### Installation
-
 ```bash
-# Clone the repository
+# Clone
 git clone https://github.com/YeahWick/claude-container.git
 cd claude-container
 
-# Install (creates ~/.claude-container directory)
+# Install (creates ~/.claude-container/)
 ./scripts/install.sh
 
-# Set your API keys
+# Set API keys
 export ANTHROPIC_API_KEY=your_key
-export GITHUB_TOKEN=your_github_token
+export GITHUB_TOKEN=your_token  # optional
 
-# Build containers
+# Build and run
 docker compose build
-
-# Run Claude
 ./scripts/run.sh
 ```
 
-### Usage
+## Adding Tools
 
-```bash
-# Start Claude interactively
-./scripts/run.sh
+See [plugins/README.md](plugins/README.md) for detailed instructions.
 
-# Start all containers in background
-./scripts/run.sh start
+**Quick example** - adding `npm`:
 
-# Check status
-./scripts/run.sh status
+1. Add symlink in `cli/`:
+   ```bash
+   cd cli && ln -s cli-wrapper npm
+   ```
 
-# Stop all containers
-./scripts/run.sh stop
-```
+2. Register in `plugins/cli/tool-caller.py`:
+   ```python
+   tools = {
+       'git': ToolConfig(binary='/usr/bin/git', timeout=300),
+       'npm': ToolConfig(binary='/usr/bin/npm', timeout=600),
+   }
+   ```
 
-## Adding New Tools
+3. Install binary in `plugins/cli/Containerfile`:
+   ```dockerfile
+   RUN apt-get update && apt-get install -y npm
+   ```
 
-Adding a new tool requires just two steps:
-
-### 1. Create symlink
-
-```bash
-cd ~/.claude-container/cli
-ln -s cli-wrapper npm
-ln -s cli-wrapper cargo
-```
-
-### 2. Update server config
-
-Edit `plugins/cli/server.py` and add to `ALLOWED_TOOLS`:
-
-```python
-ALLOWED_TOOLS = {
-    'git': {'binary': '/usr/bin/git', 'timeout': 300},
-    'npm': {'binary': '/usr/bin/npm', 'timeout': 600},
-    'cargo': {'binary': '/usr/bin/cargo', 'timeout': 600},
-}
-```
-
-Then rebuild the CLI server container. The new tool is immediately available.
+4. Rebuild: `docker compose build cli-server`
 
 ## Directory Structure
 
 ```
 claude-container/
-├── docker-compose.yaml        # Container orchestration
+├── docker-compose.yaml          # Container orchestration
 │
-├── claude/                    # Claude container
-│   └── Containerfile
+├── claude/                      # Claude Code container
+│   └── Containerfile            # Python + Claude Code CLI
 │
 ├── plugins/
-│   └── cli/                   # Unified CLI server
-│       ├── Containerfile
-│       └── server.py          # Tool execution + restrictions
+│   ├── README.md                # Plugin development guide
+│   └── cli/                     # Tool server
+│       ├── Containerfile        # Tool binaries + server
+│       ├── server.py            # Socket server
+│       ├── tool-caller.py       # Tool execution logic
+│       ├── tool-setup.sh        # Entrypoint (runs setup.d/)
+│       ├── setup.d/             # Per-tool setup scripts
+│       │   └── git.sh           # Git configuration
+│       └── restricted/          # Per-tool restriction wrappers
+│           ├── git.sh.example   # Example bash wrapper
+│           └── git.py.example   # Example python wrapper
 │
-├── cli/                       # CLI wrappers (mounted into Claude)
-│   ├── cli-wrapper            # Minimal client (~70 lines)
-│   └── git -> cli-wrapper     # Symlinks for each tool
+├── cli/                         # CLI wrappers (mounted into Claude)
+│   ├── cli-wrapper              # Socket client (~70 lines)
+│   └── git -> cli-wrapper       # Symlink per tool
 │
 └── scripts/
-    ├── install.sh             # First-time setup
-    └── run.sh                 # Launcher
+    ├── install.sh               # Creates ~/.claude-container/
+    └── run.sh                   # Start/stop/status commands
 ```
+
+## Tool Customization
+
+### Setup Scripts (`setup.d/{tool}.sh`)
+
+Run once at container start. Use for tool configuration:
+
+```bash
+# setup.d/git.sh
+git config --global --add safe.directory /workspace
+git config --global init.defaultBranch main
+```
+
+### Restriction Wrappers (`restricted/{tool}.sh`)
+
+Called instead of the real binary. Decide what to allow:
+
+```bash
+# restricted/git.sh - block force push
+#!/bin/bash
+case "$1" in
+    push)
+        for arg in "$@"; do
+            [[ "$arg" == "--force" ]] && { echo "Blocked" >&2; exit 1; }
+        done
+        ;;
+esac
+exec "$TOOL_BINARY" "$@"
+```
+
+Environment variables available to wrappers:
+- `TOOL_NAME` - Tool name (e.g., "git")
+- `TOOL_BINARY` - Path to real binary (e.g., "/usr/bin/git")
+- `TOOL_CWD` - Working directory
+- `TOOL_ARGS` - JSON array of arguments
 
 ## Protocol
 
-Client sends requests via Unix socket using length-prefixed JSON:
+Socket communication using length-prefixed JSON:
 
-**Request**:
-```json
-{
-  "tool": "git",
-  "args": ["push", "origin", "feature/x"],
-  "cwd": "/workspace"
-}
+```
+┌──────────────┬─────────────────────────────────┐
+│ 4 bytes      │ JSON payload                    │
+│ (length BE)  │ {"tool": "git", "args": [...]}  │
+└──────────────┴─────────────────────────────────┘
 ```
 
-**Response**:
-```json
-{
-  "exit_code": 0,
-  "stdout": "...",
-  "stderr": ""
-}
+**Request**: `{"tool": "git", "args": ["status"], "cwd": "/workspace"}`
+
+**Response**: `{"exit_code": 0, "stdout": "...", "stderr": ""}`
+
+## Scripts
+
+```bash
+./scripts/run.sh          # Start Claude interactively
+./scripts/run.sh start    # Start containers in background
+./scripts/run.sh stop     # Stop all containers
+./scripts/run.sh status   # Show container status
+./scripts/run.sh logs     # View logs
 ```
-
-## Security Model
-
-The architecture creates a clear security boundary:
-
-- **Claude container**: Minimal, only has wrapper scripts
-- **CLI server**: Handles execution with all restrictions
-
-### Current Restrictions
-
-The server validates:
-- Tool is in `ALLOWED_TOOLS` whitelist
-- Binary exists on the system
-
-### Planned Restrictions
-
-Additional server-side restrictions can be added:
-- Command argument validation
-- Branch protection for git
-- Blocked subcommands per tool
-- Rate limiting
 
 ## License
 

@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Example git wrapper - demonstrates how to add restrictions in Python.
+
+To enable, rename this file to git.py
+
+Environment variables available:
+    TOOL_NAME   - "git"
+    TOOL_BINARY - "/usr/bin/git"
+    TOOL_CWD    - Working directory
+    TOOL_ARGS   - JSON array of arguments (also passed as sys.argv[1:])
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+# Get environment
+TOOL_BINARY = os.environ.get('TOOL_BINARY', '/usr/bin/git')
+TOOL_CWD = os.environ.get('TOOL_CWD', os.getcwd())
+
+# Get arguments
+args = sys.argv[1:]
+
+
+def is_dangerous_push(args: list[str]) -> bool:
+    """Check if this is a dangerous push command."""
+    dangerous_flags = {'--force', '-f', '--force-with-lease'}
+    return any(arg in dangerous_flags for arg in args)
+
+
+def is_hard_reset(args: list[str]) -> bool:
+    """Check if this is a hard reset."""
+    return '--hard' in args
+
+
+def main():
+    if not args:
+        # No subcommand, pass through
+        pass
+    else:
+        subcommand = args[0]
+
+        if subcommand == 'push' and is_dangerous_push(args):
+            print("Error: Force push is not allowed", file=sys.stderr)
+            sys.exit(1)
+
+        if subcommand == 'reset' and is_hard_reset(args):
+            print("Error: Hard reset is not allowed", file=sys.stderr)
+            sys.exit(1)
+
+        if subcommand == 'clean':
+            print("Error: git clean is not allowed", file=sys.stderr)
+            sys.exit(1)
+
+    # Pass through to real git
+    result = subprocess.run(
+        [TOOL_BINARY] + args,
+        cwd=TOOL_CWD,
+    )
+    sys.exit(result.returncode)
+
+
+if __name__ == '__main__':
+    main()

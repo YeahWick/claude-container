@@ -1,0 +1,46 @@
+#!/bin/bash
+# Example git wrapper - demonstrates how to add restrictions
+#
+# To enable, rename this file to git.sh
+#
+# Environment variables available:
+#   TOOL_NAME   - "git"
+#   TOOL_BINARY - "/usr/bin/git"
+#   TOOL_CWD    - Working directory
+#   TOOL_ARGS   - JSON array of arguments (also passed as $@)
+
+set -e
+
+# Get the subcommand (first argument)
+SUBCOMMAND="${1:-}"
+
+# Example: Block dangerous operations
+case "$SUBCOMMAND" in
+    "push")
+        # Check for --force flag
+        for arg in "$@"; do
+            case "$arg" in
+                --force|-f|--force-with-lease)
+                    echo "Error: Force push is not allowed" >&2
+                    exit 1
+                    ;;
+            esac
+        done
+        ;;
+    "reset")
+        # Check for --hard flag
+        for arg in "$@"; do
+            if [ "$arg" = "--hard" ]; then
+                echo "Error: Hard reset is not allowed" >&2
+                exit 1
+            fi
+        done
+        ;;
+    "clean")
+        echo "Error: git clean is not allowed" >&2
+        exit 1
+        ;;
+esac
+
+# Pass through to the real git binary
+exec "$TOOL_BINARY" "$@"

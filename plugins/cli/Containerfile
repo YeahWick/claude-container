@@ -2,6 +2,10 @@
 #
 # Unified command execution server that handles all tool requests.
 # Add tools by updating ALLOWED_TOOLS in server.py.
+#
+# To add permission restrictions for a tool, create a wrapper script
+# in /app/restricted/ named {tool}.sh or {tool}.py. The wrapper will
+# be called instead of the real binary.
 
 FROM python:3.12-slim
 
@@ -14,11 +18,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 -s /bin/bash cli
 
 # Create directories
-RUN mkdir -p /run/plugins /workspace \
-    && chown -R cli:cli /run/plugins /workspace
+RUN mkdir -p /run/plugins /workspace /app/setup.d /app/restricted \
+    && chown -R cli:cli /run/plugins /workspace /app
 
-# Copy server code
+# Copy server code and tool caller
 COPY plugins/cli/server.py /app/server.py
+COPY plugins/cli/tool-caller.py /app/tool_caller.py
+COPY plugins/cli/tool-setup.sh /app/tool-setup.sh
+COPY plugins/cli/setup.d/ /app/setup.d/
+
+# Make scripts executable
+RUN chmod +x /app/tool-setup.sh /app/setup.d/*.sh 2>/dev/null || true
 
 # Set ownership
 RUN chown -R cli:cli /app
@@ -26,10 +36,13 @@ RUN chown -R cli:cli /app
 # Environment
 ENV CLI_SOCKET=/run/plugins/cli.sock
 ENV PYTHONUNBUFFERED=1
+ENV WORKSPACE=/workspace
+ENV RESTRICTED_DIR=/app/restricted
 
 # Switch to non-root user
 USER cli
 WORKDIR /workspace
 
-# Start server
+# Use setup script as entrypoint, server as default command
+ENTRYPOINT ["/app/tool-setup.sh"]
 CMD ["python3", "/app/server.py"]
