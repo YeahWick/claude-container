@@ -29,7 +29,6 @@ from tool_caller import ToolCaller, ToolConfig, create_default_caller
 logger = logging.getLogger(__name__)
 
 # Configuration
-SOCKET_PATH = '/run/plugins/cli.sock'
 WORKSPACE = '/workspace'
 MAX_MSG = 64 * 1024
 
@@ -43,7 +42,7 @@ class CLIServer:
 
     def __init__(
         self,
-        socket_path: str = SOCKET_PATH,
+        socket_path: str,
         tool_caller: ToolCaller | None = None,
     ):
         self.socket_path = socket_path
@@ -201,7 +200,11 @@ def main():
         format='%(asctime)s %(levelname)s %(message)s',
     )
 
-    socket_path = os.environ.get('CLI_SOCKET', SOCKET_PATH)
+    socket_path = os.environ.get('CLI_SOCKET')
+    if not socket_path:
+        logger.error('CLI_SOCKET environment variable must be set')
+        sys.exit(1)
+
     tool_caller = create_tool_caller()
     server = CLIServer(socket_path, tool_caller=tool_caller)
 
