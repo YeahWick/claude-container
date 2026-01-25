@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Minimal CLI wrapper - forwards commands to server for execution.
+
+Detects tool name from argv[0] (supports symlinks).
+All validation and restrictions are enforced server-side.
+
+Usage: Create symlinks pointing to this script:
+    ln -s cli-wrapper git
+    ln -s cli-wrapper npm
+"""
+
+import json
+import os
+import socket
+import struct
+import sys
+
+SOCKET_PATH = '/run/plugins/cli.sock'
+MAX_MSG = 64 * 1024
+
+
+def main():
+    tool = os.path.basename(sys.argv[0])
+    args = sys.argv[1:]
+
+    request = {
+        'tool': tool,
+        'args': args,
+        'cwd': os.getcwd(),
+    }
+
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(SOCKET_PATH)
+
+        # Send request (length-prefixed JSON)
+        payload = json.dumps(request).encode()
+        sock.sendall(struct.pack('>I', len(payload)) + payload)
+
+        # Read response length
+        length_data = sock.recv(4)
+        if len(length_data) < 4:
+            print(f'error: connection closed', file=sys.stderr)
+            return 1
+        length = struct.unpack('>I', length_data)[0]
+
+        # Read response
+        data = b''
+        while len(data) < length:
+            chunk = sock.recv(min(4096, length - len(data)))
+            if not chunk:
+                break
+            data += chunk
+        sock.close()
+
+        response = json.loads(data)
+
+    except FileNotFoundError:
+        print(f'error: CLI server not available', file=sys.stderr)
+        return 127
+    except ConnectionRefusedError:
+        print(f'error: CLI server not responding', file=sys.stderr)
+        return 127
+    except Exception as e:
+        print(f'error: {e}', file=sys.stderr)
+        return 1
+
+    # Output
+    if response.get('error'):
+        print(f"error: {response['error']}", file=sys.stderr)
+    if response.get('stdout'):
+        sys.stdout.write(response['stdout'])
+    if response.get('stderr'):
+        sys.stderr.write(response['stderr'])
+
+    return response.get('exit_code', 1)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
