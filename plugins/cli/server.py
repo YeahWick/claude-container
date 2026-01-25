@@ -178,26 +178,21 @@ class CLIServer:
 
 
 def create_tool_caller() -> ToolCaller:
-    """Create the tool caller with appropriate configuration.
+    """Create the tool caller with configuration from environment.
 
-    Override this function or set TOOL_CALLER_MODE environment variable
-    to customize permission restrictions.
+    Environment variables:
+        WORKSPACE        - Working directory (default: /workspace)
+        RESTRICTED_DIR   - Directory for wrapper scripts (default: /app/restricted)
 
-    Modes:
-        - 'default': No restrictions, calls tools as-is
-        - 'restricted': Workspace enforcement and subcommand validation
+    If wrapper scripts exist in RESTRICTED_DIR matching the tool name
+    (e.g., git.sh or git.py), they will be called instead of the real
+    binary. The wrapper decides what to allow.
     """
-    from tool_caller import create_default_caller, create_restricted_caller
-
-    mode = os.environ.get('TOOL_CALLER_MODE', 'default')
     workspace = os.environ.get('WORKSPACE', WORKSPACE)
+    restricted_dir = os.environ.get('RESTRICTED_DIR', '/app/restricted')
 
-    if mode == 'restricted':
-        logger.info('Using restricted tool caller')
-        return create_restricted_caller(workspace)
-    else:
-        logger.info('Using default tool caller')
-        return create_default_caller(workspace)
+    logger.info(f'Tool caller: workspace={workspace}, restricted_dir={restricted_dir}')
+    return create_default_caller(workspace=workspace, restricted_dir=restricted_dir)
 
 
 def main():

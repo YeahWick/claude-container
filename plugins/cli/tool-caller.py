@@ -1,25 +1,36 @@
 #!/usr/bin/env python3
-"""Tool Server Caller - handles tool binary invocation with permission hooks.
+"""Tool Server Caller - handles tool binary invocation.
 
-By default, calls the CLI tool binary as-is. Can be extended to inject
-permission restrictions, argument validation, and audit logging.
+By default, calls the CLI tool binary as-is. If a wrapper script exists
+in the RESTRICTED_TOOLS_DIR, that wrapper is called instead. The wrapper
+decides what to allow and whether to pass through to the real tool.
 
-Usage:
-    from tool_caller import ToolCaller
+Wrapper lookup order:
+  1. {RESTRICTED_TOOLS_DIR}/{tool}.py  (Python script)
+  2. {RESTRICTED_TOOLS_DIR}/{tool}.sh  (Bash script)
+  3. {RESTRICTED_TOOLS_DIR}/{tool}     (Any executable)
 
-    caller = ToolCaller()
-    result = caller.call('git', ['push', 'origin', 'main'], cwd='/workspace')
+If no wrapper exists, calls the real binary directly.
+
+Environment variables passed to wrappers:
+  TOOL_NAME      - Name of the tool being called
+  TOOL_BINARY    - Path to the real binary
+  TOOL_CWD       - Working directory for the command
+  TOOL_ARGS      - JSON array of arguments
 """
 
+import json
 import logging
 import os
 import subprocess
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 logger = logging.getLogger(__name__)
+
+# Default locations
+DEFAULT_RESTRICTED_DIR = '/app/restricted'
+DEFAULT_WORKSPACE = '/workspace'
 
 
 @dataclass
@@ -47,132 +58,68 @@ class ToolConfig:
     """Configuration for a tool."""
     binary: str
     timeout: int = 300
-    allowed_subcommands: list[str] | None = None  # None = all allowed
-    denied_subcommands: list[str] | None = None
-    allowed_args_patterns: list[str] | None = None
-    denied_args_patterns: list[str] | None = None
-    env_overrides: dict[str, str] = field(default_factory=dict)
-
-
-class PermissionChecker(ABC):
-    """Abstract base class for permission checkers."""
-
-    @abstractmethod
-    def check(self, tool: str, args: list[str], cwd: str, config: ToolConfig) -> tuple[bool, str | None]:
-        """Check if the command is allowed.
-
-        Returns:
-            (allowed, error_message) - If allowed is False, error_message explains why.
-        """
-        pass
-
-
-class DefaultPermissionChecker(PermissionChecker):
-    """Default permission checker - allows all commands."""
-
-    def check(self, tool: str, args: list[str], cwd: str, config: ToolConfig) -> tuple[bool, str | None]:
-        """Default: allow everything."""
-        return True, None
-
-
-class SubcommandPermissionChecker(PermissionChecker):
-    """Permission checker that validates subcommands."""
-
-    def check(self, tool: str, args: list[str], cwd: str, config: ToolConfig) -> tuple[bool, str | None]:
-        """Check subcommand permissions."""
-        if not args:
-            return True, None
-
-        subcommand = args[0]
-
-        # Check denied subcommands first
-        if config.denied_subcommands and subcommand in config.denied_subcommands:
-            return False, f"Subcommand '{subcommand}' is not allowed for {tool}"
-
-        # Check allowed subcommands if specified
-        if config.allowed_subcommands is not None:
-            if subcommand not in config.allowed_subcommands:
-                return False, f"Subcommand '{subcommand}' is not in allowed list for {tool}"
-
-        return True, None
-
-
-class WorkspacePermissionChecker(PermissionChecker):
-    """Permission checker that validates working directory is within workspace."""
-
-    def __init__(self, workspace: str = '/workspace'):
-        self.workspace = Path(workspace).resolve()
-
-    def check(self, tool: str, args: list[str], cwd: str, config: ToolConfig) -> tuple[bool, str | None]:
-        """Check that cwd is within workspace."""
-        try:
-            cwd_path = Path(cwd).resolve()
-            # Check if cwd is within workspace
-            cwd_path.relative_to(self.workspace)
-            return True, None
-        except ValueError:
-            return False, f"Working directory must be within {self.workspace}"
-
-
-class CompositePermissionChecker(PermissionChecker):
-    """Combines multiple permission checkers."""
-
-    def __init__(self, checkers: list[PermissionChecker]):
-        self.checkers = checkers
-
-    def check(self, tool: str, args: list[str], cwd: str, config: ToolConfig) -> tuple[bool, str | None]:
-        """Run all checkers, fail if any fails."""
-        for checker in self.checkers:
-            allowed, error = checker.check(tool, args, cwd, config)
-            if not allowed:
-                return False, error
-        return True, None
 
 
 class ToolCaller:
-    """Handles tool binary invocation with extensible permission checks.
+    """Handles tool binary invocation with optional wrapper scripts.
 
-    By default, calls the CLI tool binary as-is. Permission checkers can be
-    added to inject restrictions.
+    If a wrapper script exists in restricted_dir for the tool, calls that
+    instead. The wrapper handles all permission logic and can call through
+    to the real binary.
     """
 
     def __init__(
         self,
         tools: dict[str, ToolConfig] | None = None,
-        permission_checker: PermissionChecker | None = None,
-        workspace: str = '/workspace',
-        pre_call_hook: Callable[[str, list[str], str], None] | None = None,
-        post_call_hook: Callable[[str, list[str], str, ToolResult], None] | None = None,
+        restricted_dir: str = DEFAULT_RESTRICTED_DIR,
+        workspace: str = DEFAULT_WORKSPACE,
     ):
         """Initialize the tool caller.
 
         Args:
-            tools: Tool configurations. If None, uses default configurations.
-            permission_checker: Permission checker to use. If None, uses DefaultPermissionChecker.
+            tools: Tool configurations mapping name -> config.
+            restricted_dir: Directory to look for wrapper scripts.
             workspace: Default workspace directory.
-            pre_call_hook: Optional function called before tool execution.
-            post_call_hook: Optional function called after tool execution.
         """
         self.tools = tools or {}
-        self.permission_checker = permission_checker or DefaultPermissionChecker()
+        self.restricted_dir = Path(restricted_dir)
         self.workspace = workspace
-        self.pre_call_hook = pre_call_hook
-        self.post_call_hook = post_call_hook
 
     def register_tool(self, name: str, config: ToolConfig):
         """Register a tool configuration."""
         self.tools[name] = config
 
+    def find_wrapper(self, tool: str) -> Path | None:
+        """Find a wrapper script for the tool.
+
+        Returns path to wrapper if found, None otherwise.
+        """
+        if not self.restricted_dir.exists():
+            return None
+
+        # Check in order: .py, .sh, bare name
+        candidates = [
+            self.restricted_dir / f'{tool}.py',
+            self.restricted_dir / f'{tool}.sh',
+            self.restricted_dir / tool,
+        ]
+
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                # Check if executable
+                if os.access(candidate, os.X_OK):
+                    return candidate
+                # For .py files, we can run with python
+                if candidate.suffix == '.py':
+                    return candidate
+
+        return None
+
     def call(self, tool: str, args: list[str], cwd: str | None = None) -> ToolResult:
         """Call a tool with the given arguments.
 
-        Args:
-            tool: Name of the tool to call.
-            args: Command-line arguments to pass to the tool.
-            cwd: Working directory. Defaults to workspace.
-
-        Returns:
-            ToolResult with exit code, stdout, stderr, and optional error.
+        If a wrapper exists, calls the wrapper instead of the real binary.
+        The wrapper receives environment variables with tool info.
         """
         cwd = cwd or self.workspace
 
@@ -187,7 +134,7 @@ class ToolCaller:
 
         config = self.tools[tool]
 
-        # Validate binary exists
+        # Validate real binary exists
         if not Path(config.binary).exists():
             return ToolResult(
                 exit_code=127,
@@ -201,46 +148,41 @@ class ToolCaller:
         if not cwd_path.exists():
             cwd = self.workspace
 
-        # Check permissions
-        allowed, error = self.permission_checker.check(tool, args, cwd, config)
-        if not allowed:
-            return ToolResult(
-                exit_code=1,
-                stdout='',
-                stderr='',
-                error=f"Permission denied: {error}",
-            )
+        # Check for wrapper script
+        wrapper = self.find_wrapper(tool)
 
-        # Pre-call hook
-        if self.pre_call_hook:
-            try:
-                self.pre_call_hook(tool, args, cwd)
-            except Exception as e:
-                logger.warning(f"Pre-call hook failed: {e}")
+        if wrapper:
+            logger.info(f"Using wrapper {wrapper} for {tool}")
+            return self._execute_wrapper(wrapper, tool, args, cwd, config)
+        else:
+            logger.debug(f"No wrapper for {tool}, calling binary directly")
+            return self._execute_direct(tool, args, cwd, config)
 
-        # Execute command
-        result = self._execute(tool, args, cwd, config)
-
-        # Post-call hook
-        if self.post_call_hook:
-            try:
-                self.post_call_hook(tool, args, cwd, result)
-            except Exception as e:
-                logger.warning(f"Post-call hook failed: {e}")
-
-        return result
-
-    def _execute(self, tool: str, args: list[str], cwd: str, config: ToolConfig) -> ToolResult:
-        """Execute the tool binary."""
+    def _execute_wrapper(
+        self,
+        wrapper: Path,
+        tool: str,
+        args: list[str],
+        cwd: str,
+        config: ToolConfig,
+    ) -> ToolResult:
+        """Execute via wrapper script."""
         try:
-            # Build command
-            cmd = [config.binary] + args
-
-            # Build environment
+            # Build environment for wrapper
             env = os.environ.copy()
-            env.update(config.env_overrides)
+            env['TOOL_NAME'] = tool
+            env['TOOL_BINARY'] = config.binary
+            env['TOOL_CWD'] = cwd
+            env['TOOL_ARGS'] = json.dumps(args)
 
-            # Execute
+            # Determine how to run the wrapper
+            if wrapper.suffix == '.py':
+                cmd = ['python3', str(wrapper)] + args
+            elif wrapper.suffix == '.sh':
+                cmd = ['bash', str(wrapper)] + args
+            else:
+                cmd = [str(wrapper)] + args
+
             result = subprocess.run(
                 cmd,
                 cwd=cwd,
@@ -267,55 +209,66 @@ class ToolCaller:
                 exit_code=1,
                 stdout='',
                 stderr=str(e),
+                error=f'Wrapper execution failed: {e}',
+            )
+
+    def _execute_direct(
+        self,
+        tool: str,
+        args: list[str],
+        cwd: str,
+        config: ToolConfig,
+    ) -> ToolResult:
+        """Execute the tool binary directly."""
+        try:
+            cmd = [config.binary] + args
+
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                capture_output=True,
+                timeout=config.timeout,
+                env=os.environ.copy(),
+            )
+
+            return ToolResult(
+                exit_code=result.returncode,
+                stdout=result.stdout.decode('utf-8', errors='replace'),
+                stderr=result.stderr.decode('utf-8', errors='replace'),
+            )
+
+        except subprocess.TimeoutExpired:
+            return ToolResult(
+                exit_code=124,
+                stdout='',
+                stderr=f'Command timed out after {config.timeout}s',
+                error='Timeout',
+            )
+        except Exception as e:
+            return ToolResult(
+                exit_code=1,
+                stdout='',
+                stderr=str(e),
                 error=f'Execution failed: {e}',
             )
 
 
-def create_default_caller(workspace: str = '/workspace') -> ToolCaller:
-    """Create a ToolCaller with default configuration.
-
-    This creates a caller that simply executes tools as-is, without any
-    additional permission restrictions.
-    """
+def create_default_caller(
+    workspace: str = DEFAULT_WORKSPACE,
+    restricted_dir: str = DEFAULT_RESTRICTED_DIR,
+) -> ToolCaller:
+    """Create a ToolCaller with default tool configuration."""
     tools = {
         'git': ToolConfig(
             binary='/usr/bin/git',
             timeout=300,
         ),
     }
-
-    return ToolCaller(tools=tools, workspace=workspace)
-
-
-def create_restricted_caller(workspace: str = '/workspace') -> ToolCaller:
-    """Create a ToolCaller with permission restrictions.
-
-    This creates a caller with:
-    - Workspace directory enforcement
-    - Subcommand validation (based on tool config)
-    """
-    tools = {
-        'git': ToolConfig(
-            binary='/usr/bin/git',
-            timeout=300,
-            # Example: deny dangerous git operations
-            denied_subcommands=['push', 'force-push'],
-        ),
-    }
-
-    permission_checker = CompositePermissionChecker([
-        WorkspacePermissionChecker(workspace),
-        SubcommandPermissionChecker(),
-    ])
-
-    def audit_log(tool: str, args: list[str], cwd: str):
-        logger.info(f"AUDIT: {tool} {' '.join(args)} in {cwd}")
 
     return ToolCaller(
         tools=tools,
-        permission_checker=permission_checker,
         workspace=workspace,
-        pre_call_hook=audit_log,
+        restricted_dir=restricted_dir,
     )
 
 
