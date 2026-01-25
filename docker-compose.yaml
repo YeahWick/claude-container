@@ -1,13 +1,13 @@
-# Claude Container v2 - Plugin Socket Architecture
+# Claude Container v2 - Simplified CLI Architecture
 #
 # This compose file sets up:
-# - Claude container (CLI with plugin wrappers)
-# - Git plugin (socket-based git with branch protection)
+# - Claude container (CLI with simple wrapper)
+# - CLI server (handles all tool execution)
 #
-# Add more plugins by adding new services and mounting their sockets.
+# To add more tools, update ALLOWED_TOOLS in plugins/cli/server.py
 
 services:
-  # Claude Code container - minimal, no direct tool access
+  # Claude Code container - minimal, just runs wrapper commands
   claude:
     build:
       context: .
@@ -30,36 +30,29 @@ services:
     networks:
       - plugin-net
     depends_on:
-      - git-plugin
+      - cli-server
 
-  # Git plugin - provides git with branch protection
-  git-plugin:
+  # CLI server - handles all tool execution with restrictions
+  cli-server:
     build:
       context: .
-      dockerfile: plugins/git/Containerfile
-    image: plugin-git:v2
-    container_name: git-plugin
+      dockerfile: plugins/cli/Containerfile
+    image: cli-server:v2
+    container_name: cli-server
     volumes:
       # Plugin sockets - read-write to create socket
       - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:rw
-      # Plugin config - configuration file
-      - ${CLAUDE_HOME:-~/.claude-container}/config:/etc/plugins:ro
-      # Workspace - same as claude container for git operations
+      # Workspace - same as claude container
       - ${PROJECT_DIR:-.}:/workspace
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GH_TOKEN=${GH_TOKEN:-${GITHUB_TOKEN}}
-      - PLUGIN_SOCKET=/run/plugins/git.sock
-      - PLUGIN_CONFIG=/etc/plugins/git.yaml
+      - CLI_SOCKET=/run/plugins/cli.sock
     working_dir: /workspace
     networks:
       - plugin-net
-    # Capability for memory locking (credentials)
-    cap_add:
-      - IPC_LOCK
-    # Health check
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/plugins/git.sock'); s.close()"]
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/plugins/cli.sock'); s.close()"]
       interval: 10s
       timeout: 5s
       retries: 3

@@ -1,0 +1,35 @@
+# CLI Server Container
+#
+# Unified command execution server that handles all tool requests.
+# Add tools by updating ALLOWED_TOOLS in server.py.
+
+FROM python:3.12-slim
+
+# Install tools (add more as needed)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash cli
+
+# Create directories
+RUN mkdir -p /run/plugins /workspace \
+    && chown -R cli:cli /run/plugins /workspace
+
+# Copy server code
+COPY plugins/cli/server.py /app/server.py
+
+# Set ownership
+RUN chown -R cli:cli /app
+
+# Environment
+ENV CLI_SOCKET=/run/plugins/cli.sock
+ENV PYTHONUNBUFFERED=1
+
+# Switch to non-root user
+USER cli
+WORKDIR /workspace
+
+# Start server
+CMD ["python3", "/app/server.py"]
