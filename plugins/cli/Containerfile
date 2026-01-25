@@ -1,7 +1,7 @@
 # CLI Server Container
 #
 # Unified command execution server that handles all tool requests.
-# Add tools by updating ALLOWED_TOOLS in server.py.
+# Add tools by updating create_default_caller() in tool-caller.py.
 #
 # To add permission restrictions for a tool, create a wrapper script
 # in /app/restricted/ named {tool}.sh or {tool}.py. The wrapper will
