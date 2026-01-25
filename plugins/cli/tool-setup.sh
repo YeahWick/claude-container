@@ -1,71 +1,23 @@
 #!/bin/bash
-# Tool Setup Script
+# Tool Container Entrypoint
 #
-# Runs when the tool container starts to initialize the environment.
-# Add tool-specific initialization here.
+# Runs per-tool setup scripts from /app/setup.d/ then executes the main command.
+# Each tool can have its own setup script: /app/setup.d/{tool}.sh
 
 set -e
 
-echo "=== Tool Container Setup ==="
-
 # Create necessary directories
-mkdir -p /run/plugins
-mkdir -p /workspace
+mkdir -p /run/plugins 2>/dev/null || true
 
-# Git configuration (if git is available)
-if command -v git &> /dev/null; then
-    echo "Configuring git..."
-    # Safe directory configuration for workspace
-    git config --global --add safe.directory /workspace
-    git config --global --add safe.directory '*'
-
-    # Default git settings for better UX
-    git config --global init.defaultBranch main
-    git config --global core.autocrlf input
-    git config --global pull.rebase false
-
-    echo "Git configured"
-fi
-
-# Tool-specific setup hooks
-# Add custom initialization scripts in /app/setup.d/
-SETUP_DIR="/app/setup.d"
+# Run per-tool setup scripts
+SETUP_DIR="${SETUP_DIR:-/app/setup.d}"
 if [ -d "$SETUP_DIR" ]; then
-    echo "Running setup hooks from $SETUP_DIR..."
     for script in "$SETUP_DIR"/*.sh; do
-        if [ -f "$script" ] && [ -x "$script" ]; then
-            echo "Running: $script"
-            "$script"
-        fi
+        [ -f "$script" ] || continue
+        echo "Setup: $(basename "$script" .sh)"
+        bash "$script" || echo "  Warning: setup failed"
     done
 fi
 
-# Environment validation
-echo "Validating environment..."
-
-# Check socket directory is writable
-if [ -w "/run/plugins" ]; then
-    echo "  Socket directory: OK"
-else
-    echo "  Socket directory: WARNING - not writable"
-fi
-
-# Check workspace exists
-if [ -d "/workspace" ]; then
-    echo "  Workspace: OK"
-else
-    echo "  Workspace: WARNING - does not exist"
-fi
-
-# Load custom environment variables if present
-ENV_FILE="/app/tool-env.sh"
-if [ -f "$ENV_FILE" ]; then
-    echo "Loading custom environment from $ENV_FILE"
-    source "$ENV_FILE"
-fi
-
-echo "=== Setup Complete ==="
-echo ""
-
-# Execute the main command (typically the server)
+# Execute the main command
 exec "$@"
