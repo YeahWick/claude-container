@@ -8,7 +8,8 @@ All validation and restrictions are enforced here, keeping the
 client wrapper as simple as possible.
 
 Uses the ToolCaller module for actual tool invocation, which supports
-auto-discovery from the tools.d directory.
+auto-discovery from the tools.d directory. Tools added after startup
+are discovered lazily on first request — no server restart required.
 """
 
 import json

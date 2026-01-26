@@ -5,12 +5,16 @@ Tools are auto-discovered from TOOLS_DIR (default: /app/tools.d/).
 Each tool is a subdirectory containing:
 
   tool.json     - Required: {"binary": "/usr/bin/git", "timeout": 300}
-  setup.sh      - Optional: runs at container start
+  setup.sh      - Optional: runs on first use (lazy) or at container start
   restricted.sh - Optional: restriction wrapper (bash)
   restricted.py - Optional: restriction wrapper (python, takes priority)
 
 If no tool.json exists, the tool name is used to locate the binary
 at /usr/bin/{name} or /usr/local/bin/{name}.
+
+Hot-loading: Tools added to tools.d/ after startup are discovered lazily
+on first request. The server checks the filesystem for unknown tool names
+before rejecting, registers them on the fly, and runs their setup scripts.
 
 Wrapper lookup order:
   1. {TOOLS_DIR}/{tool}/restricted.py
@@ -90,6 +94,7 @@ class ToolCaller:
         self.tools_dir = Path(tools_dir)
         self.restricted_dir = Path(restricted_dir)
         self.workspace = workspace
+        self._setup_completed: set[str] = set()
 
     def register_tool(self, name: str, config: ToolConfig):
         """Register a tool configuration."""
@@ -120,6 +125,8 @@ class ToolCaller:
                 try:
                     config = self._load_manifest(tool_name, manifest)
                     self.register_tool(tool_name, config)
+                    # Mark setup as done — tool-setup.sh already ran it at boot
+                    self._setup_completed.add(tool_name)
                     count += 1
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.error(f'Invalid manifest for tool {tool_name}: {e}')
@@ -129,6 +136,7 @@ class ToolCaller:
                 config = self._auto_detect_binary(tool_name)
                 if config:
                     self.register_tool(tool_name, config)
+                    self._setup_completed.add(tool_name)
                     count += 1
                 else:
                     logger.warning(f'Tool {tool_name}: no tool.json and binary not found in PATH')
@@ -164,6 +172,72 @@ class ToolCaller:
                 logger.debug(f'Auto-detected binary for {tool_name}: {candidate}')
                 return ToolConfig(binary=str(candidate))
         return None
+
+    def _try_lazy_discover(self, tool_name: str) -> bool:
+        """Attempt to discover a single tool on demand.
+
+        Called when a request arrives for an unregistered tool.
+        Checks if tools.d/{tool_name}/ exists and registers it.
+
+        Returns True if the tool was discovered and registered.
+        """
+        tool_dir = self.tools_dir / tool_name
+        if not tool_dir.is_dir():
+            return False
+
+        manifest = tool_dir / 'tool.json'
+        if manifest.exists():
+            try:
+                config = self._load_manifest(tool_name, manifest)
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.error(f'Hot-load failed for {tool_name}: invalid manifest: {e}')
+                return False
+        else:
+            config = self._auto_detect_binary(tool_name)
+            if not config:
+                logger.warning(f'Hot-load failed for {tool_name}: no manifest and binary not found')
+                return False
+
+        self.register_tool(tool_name, config)
+        logger.info(f'Hot-loaded tool: {tool_name}')
+
+        # Run setup script if present and not yet run
+        self._run_setup_if_needed(tool_name)
+
+        return True
+
+    def _run_setup_if_needed(self, tool_name: str):
+        """Run a tool's setup.sh if it exists and hasn't been run yet."""
+        if tool_name in self._setup_completed:
+            return
+
+        setup_script = self.tools_dir / tool_name / 'setup.sh'
+        if not setup_script.exists():
+            self._setup_completed.add(tool_name)
+            return
+
+        logger.info(f'Running setup script for hot-loaded tool: {tool_name}')
+        try:
+            result = subprocess.run(
+                ['bash', str(setup_script)],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                logger.info(f'Setup complete for: {tool_name}')
+            else:
+                stderr = result.stderr.decode('utf-8', errors='replace').strip()
+                logger.warning(f'Setup failed for {tool_name} (exit {result.returncode}): {stderr}')
+        except subprocess.TimeoutExpired:
+            logger.warning(f'Setup script timed out for: {tool_name}')
+        except Exception as e:
+            logger.warning(f'Setup script error for {tool_name}: {type(e).__name__}: {e}')
+
+        self._setup_completed.add(tool_name)
+
+    def mark_setup_done(self, tool_name: str):
+        """Mark a tool's setup as already completed (e.g. run at startup)."""
+        self._setup_completed.add(tool_name)
 
     def find_wrapper(self, tool: str) -> Path | None:
         """Find a wrapper script for the tool.
@@ -208,15 +282,16 @@ class ToolCaller:
         """
         cwd = cwd or self.workspace
 
-        # Check tool is registered
+        # Check tool is registered; try lazy discovery if not
         if tool not in self.tools:
-            logger.warning(f'Rejected unknown tool: {tool}')
-            return ToolResult(
-                exit_code=1,
-                stdout='',
-                stderr='',
-                error=f"Unknown tool: {tool}",
-            )
+            if not self._try_lazy_discover(tool):
+                logger.warning(f'Rejected unknown tool: {tool}')
+                return ToolResult(
+                    exit_code=1,
+                    stdout='',
+                    stderr='',
+                    error=f"Unknown tool: {tool}",
+                )
 
         config = self.tools[tool]
 
