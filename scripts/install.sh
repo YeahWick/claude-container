@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install script for Claude Container v2
 #
-# Sets up host directories and copies default configuration files.
+# Sets up host directories, copies tool definitions, and generates CLI wrappers.
 
 set -e
 
@@ -17,7 +17,7 @@ echo ""
 
 # Create host directories
 echo "Creating directories..."
-mkdir -p "$CLAUDE_HOME"/{cli,sockets,config}
+mkdir -p "$CLAUDE_HOME"/{cli,sockets,config,tools.d}
 
 # Set permissions
 # UID 1000 = container user (plugin containers write to sockets)
@@ -25,15 +25,49 @@ echo "Setting permissions..."
 chmod 755 "$CLAUDE_HOME"/cli
 chmod 770 "$CLAUDE_HOME"/sockets
 chmod 755 "$CLAUDE_HOME"/config
+chmod 755 "$CLAUDE_HOME"/tools.d
 
-# Optionally set ownership for sockets directory
-# Uncomment if your user ID is not 1000
-# sudo chown 1000:1000 "$CLAUDE_HOME"/sockets
+# Copy CLI wrapper script
+echo "Installing CLI wrapper..."
+cp "$REPO_DIR"/cli/cli-wrapper "$CLAUDE_HOME"/cli/
+chmod +x "$CLAUDE_HOME"/cli/cli-wrapper
 
-# Copy CLI wrappers
-echo "Installing CLI wrappers..."
-cp "$REPO_DIR"/cli/* "$CLAUDE_HOME"/cli/
-chmod +x "$CLAUDE_HOME"/cli/*
+# Copy built-in tool definitions
+echo "Installing tool definitions..."
+if [ -d "$REPO_DIR/tools.d" ]; then
+    for tool_dir in "$REPO_DIR"/tools.d/*/; do
+        [ -d "$tool_dir" ] || continue
+        tool_name="$(basename "$tool_dir")"
+        dest="$CLAUDE_HOME/tools.d/$tool_name"
+
+        # Copy tool definition (don't overwrite user customizations)
+        if [ ! -d "$dest" ]; then
+            cp -r "$tool_dir" "$dest"
+            echo "  Added tool: $tool_name"
+        else
+            # Update tool.json but preserve user's restricted/setup scripts
+            if [ -f "$tool_dir/tool.json" ]; then
+                cp "$tool_dir/tool.json" "$dest/tool.json"
+            fi
+            echo "  Updated tool: $tool_name"
+        fi
+    done
+fi
+
+# Auto-generate CLI symlinks from tools.d
+echo "Generating CLI symlinks..."
+for tool_dir in "$CLAUDE_HOME"/tools.d/*/; do
+    [ -d "$tool_dir" ] || continue
+    tool_name="$(basename "$tool_dir")"
+    symlink="$CLAUDE_HOME/cli/$tool_name"
+
+    # Skip if tool name is cli-wrapper
+    [ "$tool_name" = "cli-wrapper" ] && continue
+
+    # Create or update symlink
+    ln -sf cli-wrapper "$symlink"
+    echo "  $tool_name -> cli-wrapper"
+done
 
 # Copy default configs
 echo "Installing default configurations..."
@@ -44,23 +78,40 @@ echo "Installation complete!"
 echo ""
 echo "Directory structure:"
 echo "  $CLAUDE_HOME/"
-echo "  ├── cli/           # Plugin wrapper scripts"
+echo "  ├── cli/           # CLI wrapper + auto-generated symlinks"
 echo "  ├── sockets/       # Plugin Unix sockets (one per instance)"
-echo "  └── config/        # Plugin configuration"
+echo "  ├── config/        # Plugin configuration"
+echo "  └── tools.d/       # Tool definitions (auto-discovered)"
 echo ""
+
+# Show discovered tools
+echo "Registered tools:"
+for tool_dir in "$CLAUDE_HOME"/tools.d/*/; do
+    [ -d "$tool_dir" ] || continue
+    tool_name="$(basename "$tool_dir")"
+    has_manifest="no"
+    has_setup="no"
+    has_restricted="no"
+    [ -f "$tool_dir/tool.json" ] && has_manifest="yes"
+    [ -f "$tool_dir/setup.sh" ] && has_setup="yes"
+    [ -f "$tool_dir/restricted.sh" ] || [ -f "$tool_dir/restricted.py" ] && has_restricted="yes"
+    echo "  $tool_name (manifest=$has_manifest, setup=$has_setup, restricted=$has_restricted)"
+done
+echo ""
+
 echo "Next steps:"
-echo "  1. Set your GitHub token: export GITHUB_TOKEN=your_token"
-echo "  2. Build containers: docker compose build"
-echo "  3. Start Claude: ./scripts/run.sh"
+echo "  1. Set your API key:     export ANTHROPIC_API_KEY=your_key"
+echo "  2. Build containers:     docker compose build"
+echo "  3. Start Claude:         ./scripts/run.sh"
 echo ""
-echo "Concurrent instances:"
-echo "  - Each PROJECT_DIR gets a unique instance ID (hash of path)"
-echo "  - Run from different directories to have multiple instances"
-echo "  - Sockets are named: cli-{instance_id}.sock"
-echo "  - Override with: INSTANCE_ID=myname ./scripts/run.sh"
+echo "To add a new tool:"
+echo "  1. Create: $CLAUDE_HOME/tools.d/mytool/tool.json"
+echo '     Content: {"binary": "/usr/bin/mytool", "timeout": 300}'
+echo "  2. (Optional) Add: setup.sh, restricted.sh, restricted.py"
+echo "  3. Re-run: ./scripts/install.sh  (generates symlinks)"
+echo "  4. Rebuild: docker compose build  (if binary needs installing)"
 echo ""
-echo "To add a new plugin:"
-echo "  1. Add wrapper:  cp my-tool $CLAUDE_HOME/cli/"
-echo "  2. Add config:   cp my-tool.yaml $CLAUDE_HOME/config/"
-echo "  3. Add service to docker-compose.yaml"
-echo "  4. Start plugin: docker compose up -d my-tool-plugin"
+echo "Or from a tool repo:"
+echo "  cp -r /path/to/my-tool-repo $CLAUDE_HOME/tools.d/mytool"
+echo "  ./scripts/install.sh"
+echo ""

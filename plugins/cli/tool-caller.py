@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Tool Server Caller - handles tool binary invocation.
+"""Tool Server Caller - handles tool binary invocation with auto-discovery.
 
-By default, calls the CLI tool binary as-is. If a wrapper script exists
-in the RESTRICTED_TOOLS_DIR, that wrapper is called instead. The wrapper
-decides what to allow and whether to pass through to the real tool.
+Tools are auto-discovered from TOOLS_DIR (default: /app/tools.d/).
+Each tool is a subdirectory containing:
+
+  tool.json     - Required: {"binary": "/usr/bin/git", "timeout": 300}
+  setup.sh      - Optional: runs at container start
+  restricted.sh - Optional: restriction wrapper (bash)
+  restricted.py - Optional: restriction wrapper (python, takes priority)
+
+If no tool.json exists, the tool name is used to locate the binary
+at /usr/bin/{name} or /usr/local/bin/{name}.
 
 Wrapper lookup order:
-  1. {RESTRICTED_TOOLS_DIR}/{tool}.py  (Python script)
-  2. {RESTRICTED_TOOLS_DIR}/{tool}.sh  (Bash script)
-  3. {RESTRICTED_TOOLS_DIR}/{tool}     (Any executable)
+  1. {TOOLS_DIR}/{tool}/restricted.py
+  2. {TOOLS_DIR}/{tool}/restricted.sh
+  3. {TOOLS_DIR}/{tool}/restricted    (any executable)
+  4. {RESTRICTED_DIR}/{tool}.py       (global fallback)
+  5. {RESTRICTED_DIR}/{tool}.sh       (global fallback)
+  6. {RESTRICTED_DIR}/{tool}          (global fallback)
 
 If no wrapper exists, calls the real binary directly.
 
@@ -29,6 +39,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Default locations
+DEFAULT_TOOLS_DIR = '/app/tools.d'
 DEFAULT_RESTRICTED_DIR = '/app/restricted'
 DEFAULT_WORKSPACE = '/workspace'
 
@@ -63,55 +74,129 @@ class ToolConfig:
 class ToolCaller:
     """Handles tool binary invocation with optional wrapper scripts.
 
-    If a wrapper script exists in restricted_dir for the tool, calls that
-    instead. The wrapper handles all permission logic and can call through
+    If a wrapper script exists for the tool, calls that instead.
+    The wrapper handles all permission logic and can call through
     to the real binary.
     """
 
     def __init__(
         self,
         tools: dict[str, ToolConfig] | None = None,
+        tools_dir: str = DEFAULT_TOOLS_DIR,
         restricted_dir: str = DEFAULT_RESTRICTED_DIR,
         workspace: str = DEFAULT_WORKSPACE,
     ):
-        """Initialize the tool caller.
-
-        Args:
-            tools: Tool configurations mapping name -> config.
-            restricted_dir: Directory to look for wrapper scripts.
-            workspace: Default workspace directory.
-        """
         self.tools = tools or {}
+        self.tools_dir = Path(tools_dir)
         self.restricted_dir = Path(restricted_dir)
         self.workspace = workspace
 
     def register_tool(self, name: str, config: ToolConfig):
         """Register a tool configuration."""
         self.tools[name] = config
+        logger.info(f'Registered tool: {name} (binary={config.binary}, timeout={config.timeout}s)')
+
+    def discover_tools(self) -> int:
+        """Auto-discover tools from the tools directory.
+
+        Scans TOOLS_DIR for subdirectories containing tool.json manifests.
+        Each subdirectory name becomes the tool name.
+
+        Returns the number of tools discovered.
+        """
+        if not self.tools_dir.exists():
+            logger.warning(f'Tools directory not found: {self.tools_dir}')
+            return 0
+
+        count = 0
+        for entry in sorted(self.tools_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+
+            tool_name = entry.name
+            manifest = entry / 'tool.json'
+
+            if manifest.exists():
+                try:
+                    config = self._load_manifest(tool_name, manifest)
+                    self.register_tool(tool_name, config)
+                    count += 1
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.error(f'Invalid manifest for tool {tool_name}: {e}')
+                    continue
+            else:
+                # Auto-detect binary from common paths
+                config = self._auto_detect_binary(tool_name)
+                if config:
+                    self.register_tool(tool_name, config)
+                    count += 1
+                else:
+                    logger.warning(f'Tool {tool_name}: no tool.json and binary not found in PATH')
+
+        return count
+
+    def _load_manifest(self, tool_name: str, manifest_path: Path) -> ToolConfig:
+        """Load a tool configuration from a manifest file."""
+        with open(manifest_path) as f:
+            data = json.load(f)
+
+        binary = data.get('binary')
+        if not binary:
+            # Auto-detect if binary not specified
+            config = self._auto_detect_binary(tool_name)
+            if config:
+                binary = config.binary
+            else:
+                raise KeyError(f'binary not specified and {tool_name} not found in standard paths')
+
+        timeout = data.get('timeout', 300)
+        return ToolConfig(binary=binary, timeout=timeout)
+
+    def _auto_detect_binary(self, tool_name: str) -> ToolConfig | None:
+        """Try to find a binary for the tool in standard paths."""
+        candidates = [
+            Path(f'/usr/bin/{tool_name}'),
+            Path(f'/usr/local/bin/{tool_name}'),
+            Path(f'/bin/{tool_name}'),
+        ]
+        for candidate in candidates:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                logger.debug(f'Auto-detected binary for {tool_name}: {candidate}')
+                return ToolConfig(binary=str(candidate))
+        return None
 
     def find_wrapper(self, tool: str) -> Path | None:
         """Find a wrapper script for the tool.
 
+        Checks tool-specific directory first, then global restricted dir.
         Returns path to wrapper if found, None otherwise.
         """
-        if not self.restricted_dir.exists():
-            return None
+        # Check tool-specific directory first
+        tool_dir = self.tools_dir / tool
+        if tool_dir.is_dir():
+            tool_candidates = [
+                tool_dir / 'restricted.py',
+                tool_dir / 'restricted.sh',
+                tool_dir / 'restricted',
+            ]
+            for candidate in tool_candidates:
+                if candidate.exists() and candidate.is_file():
+                    if os.access(candidate, os.X_OK) or candidate.suffix == '.py':
+                        logger.debug(f'Found tool-specific wrapper: {candidate}')
+                        return candidate
 
-        # Check in order: .py, .sh, bare name
-        candidates = [
-            self.restricted_dir / f'{tool}.py',
-            self.restricted_dir / f'{tool}.sh',
-            self.restricted_dir / tool,
-        ]
-
-        for candidate in candidates:
-            if candidate.exists() and candidate.is_file():
-                # Check if executable
-                if os.access(candidate, os.X_OK):
-                    return candidate
-                # For .py files, we can run with python
-                if candidate.suffix == '.py':
-                    return candidate
+        # Fall back to global restricted directory
+        if self.restricted_dir.exists():
+            global_candidates = [
+                self.restricted_dir / f'{tool}.py',
+                self.restricted_dir / f'{tool}.sh',
+                self.restricted_dir / tool,
+            ]
+            for candidate in global_candidates:
+                if candidate.exists() and candidate.is_file():
+                    if os.access(candidate, os.X_OK) or candidate.suffix == '.py':
+                        logger.debug(f'Found global wrapper: {candidate}')
+                        return candidate
 
         return None
 
@@ -125,6 +210,7 @@ class ToolCaller:
 
         # Check tool is registered
         if tool not in self.tools:
+            logger.warning(f'Rejected unknown tool: {tool}')
             return ToolResult(
                 exit_code=1,
                 stdout='',
@@ -136,6 +222,7 @@ class ToolCaller:
 
         # Validate real binary exists
         if not Path(config.binary).exists():
+            logger.error(f'Binary not found for tool {tool}: {config.binary}')
             return ToolResult(
                 exit_code=127,
                 stdout='',
@@ -146,16 +233,17 @@ class ToolCaller:
         # Validate cwd
         cwd_path = Path(cwd)
         if not cwd_path.exists():
+            logger.warning(f'CWD not found for {tool}, falling back to workspace: {cwd} -> {self.workspace}')
             cwd = self.workspace
 
         # Check for wrapper script
         wrapper = self.find_wrapper(tool)
 
         if wrapper:
-            logger.info(f"Using wrapper {wrapper} for {tool}")
+            logger.info(f'Executing {tool} via wrapper {wrapper.name} (args={len(args)}, cwd={cwd})')
             return self._execute_wrapper(wrapper, tool, args, cwd, config)
         else:
-            logger.debug(f"No wrapper for {tool}, calling binary directly")
+            logger.info(f'Executing {tool} directly (args={len(args)}, cwd={cwd})')
             return self._execute_direct(tool, args, cwd, config)
 
     def _execute_wrapper(
@@ -198,6 +286,7 @@ class ToolCaller:
             )
 
         except subprocess.TimeoutExpired:
+            logger.warning(f'Tool {tool} timed out after {config.timeout}s (wrapper={wrapper.name})')
             return ToolResult(
                 exit_code=124,
                 stdout='',
@@ -205,6 +294,7 @@ class ToolCaller:
                 error='Timeout',
             )
         except Exception as e:
+            logger.error(f'Wrapper execution failed for {tool}: {type(e).__name__}: {e}')
             return ToolResult(
                 exit_code=1,
                 stdout='',
@@ -238,6 +328,7 @@ class ToolCaller:
             )
 
         except subprocess.TimeoutExpired:
+            logger.warning(f'Tool {tool} timed out after {config.timeout}s')
             return ToolResult(
                 exit_code=124,
                 stdout='',
@@ -245,6 +336,7 @@ class ToolCaller:
                 error='Timeout',
             )
         except Exception as e:
+            logger.error(f'Direct execution failed for {tool}: {type(e).__name__}: {e}')
             return ToolResult(
                 exit_code=1,
                 stdout='',
@@ -253,22 +345,42 @@ class ToolCaller:
             )
 
 
+def create_auto_caller(
+    tools_dir: str = DEFAULT_TOOLS_DIR,
+    restricted_dir: str = DEFAULT_RESTRICTED_DIR,
+    workspace: str = DEFAULT_WORKSPACE,
+) -> ToolCaller:
+    """Create a ToolCaller that auto-discovers tools from tools.d directory.
+
+    Scans the tools directory for subdirectories with tool.json manifests.
+    Each subdirectory becomes a registered tool.
+    """
+    caller = ToolCaller(
+        tools_dir=tools_dir,
+        restricted_dir=restricted_dir,
+        workspace=workspace,
+    )
+
+    count = caller.discover_tools()
+    logger.info(f'Auto-discovered {count} tool(s) from {tools_dir}')
+
+    return caller
+
+
+# Backwards compatibility
 def create_default_caller(
     workspace: str = DEFAULT_WORKSPACE,
     restricted_dir: str = DEFAULT_RESTRICTED_DIR,
+    tools_dir: str = DEFAULT_TOOLS_DIR,
 ) -> ToolCaller:
-    """Create a ToolCaller with default tool configuration."""
-    tools = {
-        'git': ToolConfig(
-            binary='/usr/bin/git',
-            timeout=300,
-        ),
-    }
+    """Create a ToolCaller with auto-discovery (backwards compatible).
 
-    return ToolCaller(
-        tools=tools,
-        workspace=workspace,
+    Preferred: use create_auto_caller() directly.
+    """
+    return create_auto_caller(
+        tools_dir=tools_dir,
         restricted_dir=restricted_dir,
+        workspace=workspace,
     )
 
 
@@ -276,7 +388,10 @@ def create_default_caller(
 if __name__ == '__main__':
     import sys
 
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(message)s',
+    )
 
     if len(sys.argv) < 2:
         print("Usage: tool-caller.py <tool> [args...]")
@@ -285,7 +400,7 @@ if __name__ == '__main__':
     tool = sys.argv[1]
     args = sys.argv[2:]
 
-    caller = create_default_caller()
+    caller = create_auto_caller()
     result = caller.call(tool, args)
 
     if result.stdout:

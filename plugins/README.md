@@ -8,66 +8,57 @@ This directory contains the tool server that executes commands on behalf of Clau
 plugins/cli/
 ├── Containerfile        # Container image definition
 ├── server.py            # Socket server (receives requests)
-├── tool-caller.py       # Tool execution (calls binaries)
-├── tool-setup.sh        # Entrypoint (runs setup scripts)
-├── setup.d/             # Per-tool setup scripts (run on start)
-│   └── git.sh
-└── restricted/          # Per-tool restriction wrappers (optional)
+├── tool-caller.py       # Tool execution with auto-discovery
+├── tool-setup.sh        # Entrypoint (runs setup scripts from tools.d/)
+└── restricted/          # Global restriction wrappers (optional)
     ├── git.sh.example
     └── git.py.example
+
+tools.d/                 # Tool definitions (auto-discovered)
+└── git/
+    ├── tool.json        # Required: tool manifest
+    └── setup.sh         # Optional: runs at container start
 ```
 
 ## Adding a New Tool
 
-### Step 1: Create CLI wrapper symlink
+Tools are auto-discovered from the `tools.d/` directory. No code changes or symlinks needed.
 
-In the `cli/` directory at the repo root:
+### Step 1: Create a tool directory
 
 ```bash
-cd cli
-ln -s cli-wrapper mytool
+mkdir -p tools.d/mytool
 ```
 
-### Step 2: Register the tool
+### Step 2: Create tool.json manifest
 
-Edit `plugins/cli/tool-caller.py` and add to the `tools` dict in `create_default_caller()`:
-
-```python
-def create_default_caller(...) -> ToolCaller:
-    tools = {
-        'git': ToolConfig(binary='/usr/bin/git', timeout=300),
-        'mytool': ToolConfig(binary='/usr/bin/mytool', timeout=300),
-    }
-    ...
+```bash
+cat > tools.d/mytool/tool.json << 'EOF'
+{
+  "binary": "/usr/bin/mytool",
+  "timeout": 300
+}
+EOF
 ```
 
-### Step 3: Install the binary
+The `binary` field is optional. If omitted, the system auto-detects from
+`/usr/bin/{name}`, `/usr/local/bin/{name}`, or `/bin/{name}`.
 
-Edit `plugins/cli/Containerfile`:
+### Step 3: (Optional) Add setup script
 
-```dockerfile
-# Install tools (add more as needed)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    mytool \
-    && rm -rf /var/lib/apt/lists/*
-```
-
-### Step 4: (Optional) Add setup script
-
-Create `plugins/cli/setup.d/mytool.sh`:
+Create `tools.d/mytool/setup.sh`:
 
 ```bash
 #!/bin/bash
-# mytool setup - runs at container start
+# Runs once at container start
 command -v mytool &>/dev/null || exit 0
 
 mytool config --global some.setting value
 ```
 
-### Step 5: (Optional) Add restriction wrapper
+### Step 4: (Optional) Add restriction wrapper
 
-Create `plugins/cli/restricted/mytool.sh`:
+Create `tools.d/mytool/restricted.sh` or `tools.d/mytool/restricted.py`:
 
 ```bash
 #!/bin/bash
@@ -83,18 +74,83 @@ esac
 exec "$TOOL_BINARY" "$@"
 ```
 
+### Step 5: Install the binary
+
+Edit `plugins/cli/Containerfile`:
+
+```dockerfile
+# Install tools (add more as needed)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    mytool \
+    && rm -rf /var/lib/apt/lists/*
+```
+
 ### Step 6: Rebuild
 
 ```bash
 docker compose build cli-server
-./scripts/install.sh  # Updates CLI wrappers
+./scripts/install.sh  # Copies tool definitions and generates symlinks
 ```
+
+## Adding a Tool from an External Repo
+
+The simplest workflow for tools maintained in separate repositories:
+
+```bash
+# Clone the tool repo
+git clone https://github.com/example/my-tool-plugin.git
+
+# Copy into tools.d
+cp -r my-tool-plugin ~/.claude-container/tools.d/mytool
+
+# Re-run install to generate symlinks
+./scripts/install.sh
+
+# Rebuild if the binary needs installing in the container
+docker compose build cli-server
+```
+
+A tool repo just needs:
+```
+my-tool-plugin/
+├── tool.json        # Required: {"binary": "/usr/bin/mytool", "timeout": 300}
+├── setup.sh         # Optional: container startup configuration
+├── restricted.sh    # Optional: permission wrapper (bash)
+└── restricted.py    # Optional: permission wrapper (python, takes priority)
+```
+
+## How Auto-Discovery Works
+
+### Server side (tool-caller.py)
+1. At startup, scans `TOOLS_DIR` (default: `/app/tools.d/`)
+2. Each subdirectory becomes a registered tool
+3. `tool.json` provides binary path and timeout
+4. If no `tool.json`, binary is auto-detected from standard paths
+5. Restriction wrappers checked in tool directory first, then global `restricted/`
+
+### Client side (entrypoint.sh)
+1. At container start, scans `TOOLS_DIR`
+2. Creates symlinks in `/home/claude/bin/` pointing to `cli-wrapper`
+3. Claude sees each tool as a regular command in PATH
+
+### Install script
+1. Copies tool definitions from repo `tools.d/` to `~/.claude-container/tools.d/`
+2. Generates symlinks in `~/.claude-container/cli/` for each tool
+3. Preserves user customizations (won't overwrite setup/restricted scripts)
 
 ## Customization Patterns
 
-### Pattern 1: Extend the Containerfile
+### Pattern 1: Mount tool definitions at runtime
 
-For simple additions, edit `plugins/cli/Containerfile` directly.
+No rebuild needed. Add tools to `~/.claude-container/tools.d/` and restart:
+
+```bash
+mkdir -p ~/.claude-container/tools.d/curl
+echo '{"binary": "/usr/bin/curl", "timeout": 60}' > ~/.claude-container/tools.d/curl/tool.json
+./scripts/install.sh   # Generate symlinks
+# Restart containers
+```
 
 ### Pattern 2: Custom Containerfile
 
@@ -109,11 +165,8 @@ RUN apt-get update && apt-get install -y \
     nodejs npm cargo rustc \
     && rm -rf /var/lib/apt/lists/*
 
-# Add custom setup scripts
-COPY setup.d/ /app/setup.d/
-
-# Add custom restrictions
-COPY restricted/ /app/restricted/
+# Add custom tool definitions
+COPY tools.d/ /app/tools.d/
 ```
 
 Update `docker-compose.yaml`:
@@ -125,15 +178,14 @@ cli-server:
     dockerfile: my-tools/Containerfile
 ```
 
-### Pattern 3: Mount custom scripts
+### Pattern 3: Volume mount external tools
 
-For runtime customization without rebuilding:
+Mount a directory from another repo directly:
 
 ```yaml
 cli-server:
   volumes:
-    - ./my-setup.d:/app/setup.d:ro
-    - ./my-restricted:/app/restricted:ro
+    - ./my-external-tools:/app/tools.d:ro
 ```
 
 ## Writing Restriction Wrappers
@@ -149,16 +201,20 @@ Wrappers receive these environment variables:
 
 Arguments are also passed as positional parameters (`$@` or `sys.argv[1:]`).
 
+### Wrapper lookup order
+
+1. `tools.d/{tool}/restricted.py` (tool-specific, Python)
+2. `tools.d/{tool}/restricted.sh` (tool-specific, Bash)
+3. `tools.d/{tool}/restricted` (tool-specific, any executable)
+4. `restricted/{tool}.py` (global, Python)
+5. `restricted/{tool}.sh` (global, Bash)
+6. `restricted/{tool}` (global, any executable)
+
 ### Bash wrapper template
 
 ```bash
 #!/bin/bash
 set -e
-
-# Access environment
-echo "Tool: $TOOL_NAME"
-echo "Binary: $TOOL_BINARY"
-echo "CWD: $TOOL_CWD"
 
 # Check arguments
 case "$1" in
@@ -195,15 +251,11 @@ sys.exit(result.returncode)
 
 ## Writing Setup Scripts
 
-Setup scripts run once at container start. Use them for:
-
-- Tool configuration (config files, environment)
-- Credential setup
-- Directory initialization
+Setup scripts run once at container start. Place them in `tools.d/{tool}/setup.sh`:
 
 ```bash
 #!/bin/bash
-# setup.d/mytool.sh
+# tools.d/mytool/setup.sh
 
 # Skip if tool not installed
 command -v mytool &>/dev/null || exit 0
@@ -224,8 +276,8 @@ The tool server respects these environment variables:
 |----------|---------|-------------|
 | `CLI_SOCKET` | `/run/plugins/cli.sock` | Socket path |
 | `WORKSPACE` | `/workspace` | Default working directory |
-| `RESTRICTED_DIR` | `/app/restricted` | Restriction wrappers directory |
-| `SETUP_DIR` | `/app/setup.d` | Setup scripts directory |
+| `TOOLS_DIR` | `/app/tools.d` | Tool definitions directory |
+| `RESTRICTED_DIR` | `/app/restricted` | Global restriction wrappers directory |
 
 ## Debugging
 
@@ -238,11 +290,18 @@ docker compose logs -f cli-server
 Test a tool directly in the container:
 
 ```bash
-docker compose exec cli-server python3 /app/tool-caller.py git status
+docker compose exec cli-server python3 /app/tool_caller.py git status
 ```
 
-Check if wrapper is being used:
+List discovered tools:
 
 ```bash
-docker compose exec cli-server ls -la /app/restricted/
+docker compose exec cli-server ls -la /app/tools.d/
+```
+
+Check which wrapper is being used for a tool:
+
+```bash
+docker compose exec cli-server ls -la /app/tools.d/git/restricted.* 2>/dev/null
+docker compose exec cli-server ls -la /app/restricted/git.* 2>/dev/null
 ```
