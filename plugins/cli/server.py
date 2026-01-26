@@ -7,8 +7,9 @@ and executes them with appropriate restrictions.
 All validation and restrictions are enforced here, keeping the
 client wrapper as simple as possible.
 
-Uses the ToolCaller module for actual tool invocation, which allows
-injecting permission restrictions and audit logging.
+Uses the ToolCaller module for actual tool invocation, which supports
+auto-discovery from the tools.d directory. Tools added after startup
+are discovered lazily on first request — no server restart required.
 """
 
 import json
@@ -24,7 +25,7 @@ from pathlib import Path
 # Add app directory to path for imports
 sys.path.insert(0, '/app')
 
-from tool_caller import ToolCaller, ToolConfig, create_default_caller
+from tool_caller import ToolCaller, ToolConfig, create_auto_caller
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class CLIServer:
 
         # Use provided caller or create default
         if tool_caller is None:
-            self._caller = create_default_caller(workspace=WORKSPACE)
+            self._caller = create_auto_caller(workspace=WORKSPACE)
         else:
             self._caller = tool_caller
 
@@ -71,7 +72,7 @@ class CLIServer:
         os.chmod(self.socket_path, 0o660)
 
         self._running = True
-        logger.info(f'CLI server listening on {self.socket_path}')
+        logger.info(f'Server listening on {self.socket_path}')
 
         # Signal handlers
         signal.signal(signal.SIGTERM, self._shutdown)
@@ -91,13 +92,13 @@ class CLIServer:
                 continue
             except Exception as e:
                 if self._running:
-                    logger.error(f'Accept error: {e}')
+                    logger.error(f'Failed to accept connection: {type(e).__name__}: {e}')
 
         self._cleanup()
 
     def _shutdown(self, *_):
         """Handle shutdown signal."""
-        logger.info('Shutting down...')
+        logger.info('Received shutdown signal, stopping server')
         self._running = False
 
     def _cleanup(self):
@@ -107,6 +108,7 @@ class CLIServer:
         sock_file = Path(self.socket_path)
         if sock_file.exists():
             sock_file.unlink()
+        logger.info('Server stopped, socket cleaned up')
 
     def _handle(self, conn: socket.socket):
         """Handle a client connection."""
@@ -116,12 +118,21 @@ class CLIServer:
             if not request:
                 return
 
+            tool = request.get('tool', '?')
+            logger.info(f'Request: tool={tool}, args={len(request.get("args", []))}')
+
             # Process and respond
             response = self._process(request)
+
+            exit_code = response.get('exit_code', -1)
+            has_error = bool(response.get('error'))
+            log_fn = logger.warning if (exit_code != 0 or has_error) else logger.info
+            log_fn(f'Response: tool={tool}, exit_code={exit_code}, error={has_error}')
+
             self._write(conn, response)
 
         except Exception as e:
-            logger.exception(f'Handler error: {e}')
+            logger.exception(f'Connection handler failed: {type(e).__name__}: {e}')
         finally:
             conn.close()
 
@@ -133,11 +144,13 @@ class CLIServer:
             while len(length_data) < 4:
                 chunk = conn.recv(4 - len(length_data))
                 if not chunk:
+                    logger.debug('Client disconnected before sending data')
                     return None
                 length_data += chunk
 
             length = struct.unpack('>I', length_data)[0]
             if length > MAX_MSG:
+                logger.warning(f'Rejected oversized message: {length} bytes (max={MAX_MSG})')
                 return None
 
             # Read payload
@@ -145,12 +158,16 @@ class CLIServer:
             while len(data) < length:
                 chunk = conn.recv(min(4096, length - len(data)))
                 if not chunk:
+                    logger.warning(f'Client disconnected mid-read: got {len(data)}/{length} bytes')
                     return None
                 data += chunk
 
             return json.loads(data)
+        except json.JSONDecodeError as e:
+            logger.error(f'Failed to parse request JSON: {e}')
+            return None
         except Exception as e:
-            logger.error(f'Read error: {e}')
+            logger.error(f'Failed to read request: {type(e).__name__}: {e}')
             return None
 
     def _write(self, conn: socket.socket, response: dict):
@@ -158,8 +175,10 @@ class CLIServer:
         try:
             payload = json.dumps(response).encode()
             conn.sendall(struct.pack('>I', len(payload)) + payload)
+        except BrokenPipeError:
+            logger.warning('Client disconnected before response could be sent')
         except Exception as e:
-            logger.error(f'Write error: {e}')
+            logger.error(f'Failed to write response: {type(e).__name__}: {e}')
 
     def _process(self, request: dict) -> dict:
         """Process a request and return response.
@@ -181,23 +200,25 @@ def create_tool_caller() -> ToolCaller:
 
     Environment variables:
         WORKSPACE        - Working directory (default: /workspace)
-        RESTRICTED_DIR   - Directory for wrapper scripts (default: /app/restricted)
-
-    If wrapper scripts exist in RESTRICTED_DIR matching the tool name
-    (e.g., git.sh or git.py), they will be called instead of the real
-    binary. The wrapper decides what to allow.
+        RESTRICTED_DIR   - Directory for global wrapper scripts (default: /app/restricted)
+        TOOLS_DIR        - Directory for tool definitions (default: /app/tools.d)
     """
     workspace = os.environ.get('WORKSPACE', WORKSPACE)
     restricted_dir = os.environ.get('RESTRICTED_DIR', '/app/restricted')
+    tools_dir = os.environ.get('TOOLS_DIR', '/app/tools.d')
 
-    logger.info(f'Tool caller: workspace={workspace}, restricted_dir={restricted_dir}')
-    return create_default_caller(workspace=workspace, restricted_dir=restricted_dir)
+    logger.info(f'Configuration: workspace={workspace}, tools_dir={tools_dir}, restricted_dir={restricted_dir}')
+    return create_auto_caller(
+        tools_dir=tools_dir,
+        workspace=workspace,
+        restricted_dir=restricted_dir,
+    )
 
 
 def main():
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s %(levelname)s %(message)s',
+        format='%(asctime)s %(levelname)s [%(name)s] %(message)s',
     )
 
     socket_path = os.environ.get('CLI_SOCKET')

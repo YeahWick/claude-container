@@ -2,6 +2,9 @@
 #
 # Minimal container with Claude Code CLI and plugin wrappers.
 # All tools communicate via Unix sockets to plugin containers.
+#
+# Tool symlinks are auto-generated at startup from tools.d/ directory.
+# No manual symlink creation needed when adding new tools.
 
 FROM python:3.12-slim
 
@@ -20,15 +23,21 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN useradd -m -u 1000 -s /bin/bash claude
 
 # Create directories
-RUN mkdir -p /home/claude/bin /run/plugins /workspace \
-    && chown -R claude:claude /home/claude /workspace
+RUN mkdir -p /home/claude/bin /run/plugins /workspace /app/tools.d \
+    && chown -R claude:claude /home/claude /workspace /app/tools.d
+
+# Copy entrypoint script
+COPY claude/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Set PATH to include plugin wrappers
 ENV PATH="/home/claude/bin:$PATH"
+ENV TOOLS_DIR=/app/tools.d
 
 # Switch to non-root user
 USER claude
 WORKDIR /workspace
 
-# Default command
+# Auto-generate symlinks then run claude
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["claude"]

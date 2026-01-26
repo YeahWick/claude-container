@@ -5,7 +5,12 @@
 # - CLI server (handles all tool execution via Unix socket)
 #
 # Communication: Containers share a Unix socket at /run/plugins/cli-{instance}.sock
-# To add tools: Update create_default_caller() in plugins/cli/tool-caller.py
+#
+# Tool auto-discovery:
+# - Tools are defined in tools.d/ (baked into image at build, or mounted at runtime)
+# - Server auto-registers tools from /app/tools.d/ at startup
+# - Claude container auto-generates CLI symlinks from /app/tools.d/
+# - To add a tool: create tools.d/{name}/tool.json (no code changes needed)
 #
 # Concurrent Instances:
 # - INSTANCE_ID must be set (run.sh generates from PROJECT_DIR hash)
@@ -27,6 +32,8 @@ services:
       - ${CLAUDE_HOME:-~/.claude-container}/cli:/home/claude/bin:ro
       # Plugin sockets - read-only access
       - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:ro
+      # Tool definitions - for auto-generating symlinks
+      - ${CLAUDE_HOME:-~/.claude-container}/tools.d:/app/tools.d:ro
       # Workspace - project directory
       - ${PROJECT_DIR:-.}:/workspace
     environment:
@@ -34,6 +41,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       # Socket path includes instance ID (required, no default)
       - CLI_SOCKET=/run/plugins/cli-${INSTANCE_ID}.sock
+      - TOOLS_DIR=/app/tools.d
     working_dir: /workspace
     depends_on:
       - cli-server
@@ -47,6 +55,8 @@ services:
     volumes:
       # Plugin sockets - read-write to create socket
       - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:rw
+      # Tool definitions - for auto-discovery and setup scripts
+      - ${CLAUDE_HOME:-~/.claude-container}/tools.d:/app/tools.d:ro
       # Workspace - same as claude container
       - ${PROJECT_DIR:-.}:/workspace
     environment:
@@ -54,6 +64,7 @@ services:
       - GH_TOKEN=${GH_TOKEN:-${GITHUB_TOKEN}}
       # Socket path includes instance ID (required, no default)
       - CLI_SOCKET=/run/plugins/cli-${INSTANCE_ID}.sock
+      - TOOLS_DIR=/app/tools.d
     working_dir: /workspace
     healthcheck:
       test: ["CMD", "python3", "-c", "import os; import socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ['CLI_SOCKET']); s.close()"]

@@ -1,5 +1,5 @@
 #!/bin/bash
-# npm restriction wrapper - blocks publishing
+# npm restriction wrapper - blocks publishing and auth commands
 
 set -e
 
