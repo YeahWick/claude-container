@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified CLI server - handles all tool execution requests.
+"""Tool Server - handles all tool execution requests.
 
 Receives requests with {"tool": "git", "args": [...], "cwd": "..."}
 and executes them with appropriate restrictions.
@@ -34,8 +34,8 @@ WORKSPACE = '/workspace'
 MAX_MSG = 64 * 1024
 
 
-class CLIServer:
-    """Simple CLI server that forwards commands to tools.
+class ToolServer:
+    """Tool execution server that forwards commands to tools.
 
     Uses ToolCaller for actual tool invocation, allowing permission
     restrictions to be injected.
@@ -221,15 +221,15 @@ def main():
         format='%(asctime)s %(levelname)s [%(name)s] %(message)s',
     )
 
-    socket_path = os.environ.get('CLI_SOCKET')
+    socket_path = os.environ.get('TOOL_SOCKET')
     if not socket_path:
-        logger.error('CLI_SOCKET environment variable must be set')
+        logger.error('TOOL_SOCKET environment variable must be set')
         sys.exit(1)
 
     tool_caller = create_tool_caller()
-    server = CLIServer(socket_path, tool_caller=tool_caller)
+    server = ToolServer(socket_path, tool_caller=tool_caller)
 
-    logger.info('Starting CLI server')
+    logger.info('Starting tool server')
     server.start()
 
 

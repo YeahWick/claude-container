@@ -1,7 +1,7 @@
 #!/bin/bash
-# Install script for Claude Container v2
+# Install script for Claude Container
 #
-# Sets up host directories, copies tool definitions, and generates CLI wrappers.
+# Sets up host directories, copies tool definitions, and generates client wrappers.
 
 set -e
 
@@ -9,28 +9,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude-container}"
 
-echo "Claude Container v2 - Installation"
-echo "==================================="
+echo "Claude Container - Installation"
+echo "================================"
 echo ""
 echo "Installing to: $CLAUDE_HOME"
 echo ""
 
 # Create host directories
 echo "Creating directories..."
-mkdir -p "$CLAUDE_HOME"/{cli,sockets,config,tools.d}
+mkdir -p "$CLAUDE_HOME"/{client,sockets,config,tools.d}
 
 # Set permissions
-# UID 1000 = container user (plugin containers write to sockets)
+# UID 1000 = container user (tool server writes to sockets)
 echo "Setting permissions..."
-chmod 755 "$CLAUDE_HOME"/cli
+chmod 755 "$CLAUDE_HOME"/client
 chmod 770 "$CLAUDE_HOME"/sockets
 chmod 755 "$CLAUDE_HOME"/config
 chmod 755 "$CLAUDE_HOME"/tools.d
 
-# Copy CLI wrapper script
-echo "Installing CLI wrapper..."
-cp "$REPO_DIR"/cli/cli-wrapper "$CLAUDE_HOME"/cli/
-chmod +x "$CLAUDE_HOME"/cli/cli-wrapper
+# Copy tool-client script
+echo "Installing tool client..."
+cp "$REPO_DIR"/client/tool-client "$CLAUDE_HOME"/client/
+chmod +x "$CLAUDE_HOME"/client/tool-client
 
 # Copy built-in tool definitions
 echo "Installing tool definitions..."
@@ -54,19 +54,19 @@ if [ -d "$REPO_DIR/tools.d" ]; then
     done
 fi
 
-# Auto-generate CLI symlinks from tools.d
-echo "Generating CLI symlinks..."
+# Auto-generate client symlinks from tools.d
+echo "Generating client symlinks..."
 for tool_dir in "$CLAUDE_HOME"/tools.d/*/; do
     [ -d "$tool_dir" ] || continue
     tool_name="$(basename "$tool_dir")"
-    symlink="$CLAUDE_HOME/cli/$tool_name"
+    symlink="$CLAUDE_HOME/client/$tool_name"
 
-    # Skip if tool name is cli-wrapper
-    [ "$tool_name" = "cli-wrapper" ] && continue
+    # Skip if tool name is tool-client
+    [ "$tool_name" = "tool-client" ] && continue
 
     # Create or update symlink
-    ln -sf cli-wrapper "$symlink"
-    echo "  $tool_name -> cli-wrapper"
+    ln -sf tool-client "$symlink"
+    echo "  $tool_name -> tool-client"
 done
 
 # Copy default configs
@@ -78,9 +78,9 @@ echo "Installation complete!"
 echo ""
 echo "Directory structure:"
 echo "  $CLAUDE_HOME/"
-echo "  ├── cli/           # CLI wrapper + auto-generated symlinks"
-echo "  ├── sockets/       # Plugin Unix sockets (one per instance)"
-echo "  ├── config/        # Plugin configuration"
+echo "  ├── client/        # Tool client + auto-generated symlinks"
+echo "  ├── sockets/       # Tool server Unix sockets (one per instance)"
+echo "  ├── config/        # Configuration files"
 echo "  └── tools.d/       # Tool definitions (auto-discovered)"
 echo ""
 

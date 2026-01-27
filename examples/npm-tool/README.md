@@ -21,7 +21,7 @@ cp -r examples/npm-tool ~/.claude-container/tools.d/npm
 ./scripts/install.sh
 
 # Rebuild to install npm binary in container
-docker compose build cli-server
+docker compose build tool-server
 ```
 
 No code changes needed. The server auto-discovers the tool from `tools.d/npm/`.

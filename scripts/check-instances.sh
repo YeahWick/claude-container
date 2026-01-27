@@ -38,16 +38,16 @@ list_running_instances() {
             local container_name project_name instance_id
             container_name=$(echo "$line" | awk '{print $1}')
             # Extract project name (format: projectname-service-1)
-            project_name=$(echo "$container_name" | sed 's/-claude-1$//' | sed 's/-cli-server-1$//')
+            project_name=$(echo "$container_name" | sed 's/-claude-1$//' | sed 's/-tool-server-1$//')
             # Extract instance ID from project name (format: claude-{instance_id})
             instance_id=$(echo "$project_name" | sed 's/^claude-//')
 
             echo "  Container: $container_name"
             echo "  Instance:  $instance_id"
-            echo "  Socket:    $CLAUDE_HOME/sockets/cli-$instance_id.sock"
+            echo "  Socket:    $CLAUDE_HOME/sockets/tool-$instance_id.sock"
             echo ""
         fi
-    done < <(docker ps --filter "name=claude-" --format "{{.Names}}" 2>/dev/null | grep -E "claude-[a-f0-9]{8}-(claude|cli-server)-1" || true)
+    done < <(docker ps --filter "name=claude-" --format "{{.Names}}" 2>/dev/null | grep -E "claude-[a-f0-9]{8}-(claude|tool-server)-1" || true)
 
     if [ "$found" -eq 0 ]; then
         echo "  (no running instances)"
@@ -63,11 +63,11 @@ list_sockets() {
 
     if [ -d "$CLAUDE_HOME/sockets" ]; then
         local found=0
-        for sock in "$CLAUDE_HOME/sockets"/cli-*.sock; do
+        for sock in "$CLAUDE_HOME/sockets"/tool-*.sock; do
             if [ -S "$sock" ]; then
                 found=1
                 local instance_id
-                instance_id=$(basename "$sock" | sed 's/^cli-//' | sed 's/\.sock$//')
+                instance_id=$(basename "$sock" | sed 's/^tool-//' | sed 's/\.sock$//')
                 echo "  $sock"
                 echo "    Instance: $instance_id"
                 echo ""
@@ -101,13 +101,13 @@ check_path() {
     echo "  Path:     $normalized_path"
     echo "  Instance: $instance_id"
     echo "  Project:  claude-$instance_id"
-    echo "  Socket:   $CLAUDE_HOME/sockets/cli-$instance_id.sock"
+    echo "  Socket:   $CLAUDE_HOME/sockets/tool-$instance_id.sock"
     echo ""
 
     # Check if this instance is running
     if docker ps --filter "name=claude-$instance_id-" --format "{{.Names}}" 2>/dev/null | grep -q .; then
         echo "  Status: RUNNING"
-    elif [ -S "$CLAUDE_HOME/sockets/cli-$instance_id.sock" ]; then
+    elif [ -S "$CLAUDE_HOME/sockets/tool-$instance_id.sock" ]; then
         echo "  Status: STALE (socket exists but containers not running)"
     else
         echo "  Status: NOT RUNNING"

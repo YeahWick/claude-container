@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tool Server Caller - handles tool binary invocation with auto-discovery.
+"""Tool Caller - handles tool binary invocation with auto-discovery.
 
 Tools are auto-discovered from TOOLS_DIR (default: /app/tools.d/).
 Each tool is a subdirectory containing:
@@ -440,23 +440,6 @@ def create_auto_caller(
     logger.info(f'Auto-discovered {count} tool(s) from {tools_dir}')
 
     return caller
-
-
-# Backwards compatibility
-def create_default_caller(
-    workspace: str = DEFAULT_WORKSPACE,
-    restricted_dir: str = DEFAULT_RESTRICTED_DIR,
-    tools_dir: str = DEFAULT_TOOLS_DIR,
-) -> ToolCaller:
-    """Create a ToolCaller with auto-discovery (backwards compatible).
-
-    Preferred: use create_auto_caller() directly.
-    """
-    return create_auto_caller(
-        tools_dir=tools_dir,
-        restricted_dir=restricted_dir,
-        workspace=workspace,
-    )
 
 
 # For direct CLI usage

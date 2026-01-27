@@ -1,7 +1,7 @@
 #!/bin/bash
-# Run script for Claude Container v2
+# Run script for Claude Container
 #
-# Starts the Claude container with all configured plugins.
+# Starts the Claude client container with the tool server.
 # Supports multiple concurrent instances via unique project names.
 
 set -e
@@ -35,7 +35,7 @@ export INSTANCE_ID
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claude-$INSTANCE_ID}"
 
 # Check if installed
-if [ ! -d "$CLAUDE_HOME/cli" ]; then
+if [ ! -d "$CLAUDE_HOME/client" ]; then
     echo "Error: Claude Container not installed."
     echo "Run: ./scripts/install.sh"
     exit 1
@@ -67,13 +67,13 @@ case "$ACTION" in
         echo "Project:  $COMPOSE_PROJECT_NAME"
         echo ""
 
-        # Start CLI server first
-        echo "Starting CLI server..."
-        docker compose up -d cli-server
+        # Start tool server first
+        echo "Starting tool server..."
+        docker compose up -d tool-server
 
-        # Wait for CLI socket
-        echo "Waiting for CLI server..."
-        SOCKET_FILE="$CLAUDE_HOME/sockets/cli-$INSTANCE_ID.sock"
+        # Wait for tool server socket
+        echo "Waiting for tool server..."
+        SOCKET_FILE="$CLAUDE_HOME/sockets/tool-$INSTANCE_ID.sock"
         for i in {1..10}; do
             if [ -S "$SOCKET_FILE" ]; then
                 break
@@ -81,13 +81,13 @@ case "$ACTION" in
             sleep 0.5
         done
 
-        # Check if CLI socket is available
+        # Check if tool server socket is available
         if [ ! -S "$SOCKET_FILE" ]; then
-            echo "Warning: CLI server socket not ready at $SOCKET_FILE"
-            echo "Check: docker compose logs cli-server"
+            echo "Warning: Tool server socket not ready at $SOCKET_FILE"
+            echo "Check: docker compose logs tool-server"
         fi
 
-        # Start Claude interactively
+        # Start Claude client interactively
         echo "Starting Claude..."
         docker compose run --rm claude
         ;;
@@ -104,7 +104,7 @@ case "$ACTION" in
         echo ""
         echo "Containers started. Use 'docker compose logs -f' to view logs."
         echo "To connect to Claude: docker compose exec claude bash"
-        echo "Socket: $CLAUDE_HOME/sockets/cli-$INSTANCE_ID.sock"
+        echo "Socket: $CLAUDE_HOME/sockets/tool-$INSTANCE_ID.sock"
         ;;
 
     stop)
@@ -115,7 +115,7 @@ case "$ACTION" in
         docker compose down
 
         # Clean up instance socket
-        SOCKET_FILE="$CLAUDE_HOME/sockets/cli-$INSTANCE_ID.sock"
+        SOCKET_FILE="$CLAUDE_HOME/sockets/tool-$INSTANCE_ID.sock"
         if [ -S "$SOCKET_FILE" ]; then
             rm -f "$SOCKET_FILE"
             echo "Removed socket: $SOCKET_FILE"
@@ -130,7 +130,7 @@ case "$ACTION" in
         docker compose ps
         echo ""
         echo "Instance socket:"
-        ls -la "$CLAUDE_HOME/sockets/cli-$INSTANCE_ID.sock" 2>/dev/null || echo "  (not found)"
+        ls -la "$CLAUDE_HOME/sockets/tool-$INSTANCE_ID.sock" 2>/dev/null || echo "  (not found)"
         echo ""
         echo "All sockets:"
         ls -la "$CLAUDE_HOME/sockets/"*.sock 2>/dev/null || echo "  (none)"
@@ -149,10 +149,10 @@ case "$ACTION" in
         echo "Usage: $0 {run|start|stop|status|logs|build}"
         echo ""
         echo "Commands:"
-        echo "  run    - Start plugins and run Claude interactively (default)"
+        echo "  run    - Start tool server and run Claude interactively (default)"
         echo "  start  - Start all containers in background"
         echo "  stop   - Stop all containers"
-        echo "  status - Show container and plugin status"
+        echo "  status - Show container status"
         echo "  logs   - View container logs (optionally specify service)"
         echo "  build  - Build container images"
         exit 1
