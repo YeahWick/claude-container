@@ -1,7 +1,8 @@
-# Claude Container
+# Claude Container (Client)
 #
-# Minimal container with Claude Code CLI and plugin wrappers.
-# All tools communicate via Unix sockets to plugin containers.
+# Runs Claude Code CLI with tool-client wrappers.
+# This is the CLIENT side — it sends tool commands to the tool server
+# via Unix socket. No tools are executed directly in this container.
 #
 # Tool symlinks are auto-generated at startup from tools.d/ directory.
 # No manual symlink creation needed when adding new tools.
@@ -23,14 +24,14 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN useradd -m -u 1000 -s /bin/bash claude
 
 # Create directories
-RUN mkdir -p /home/claude/bin /run/plugins /workspace /app/tools.d \
+RUN mkdir -p /home/claude/bin /run/sockets /workspace /app/tools.d \
     && chown -R claude:claude /home/claude /workspace /app/tools.d
 
 # Copy entrypoint script
 COPY claude/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Set PATH to include plugin wrappers
+# Set PATH to include tool wrappers
 ENV PATH="/home/claude/bin:$PATH"
 ENV TOOLS_DIR=/app/tools.d
 

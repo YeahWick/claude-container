@@ -1,7 +1,7 @@
 #!/bin/bash
-# Claude Container Entrypoint
+# Claude Container Entrypoint (Client)
 #
-# Auto-generates CLI wrapper symlinks from tools.d/ directory, then starts
+# Auto-generates tool-client symlinks from tools.d/ directory, then starts
 # a lightweight background poller that watches for new tools added at runtime.
 #
 # Initial scan: creates symlinks for all tools found in tools.d/
@@ -12,24 +12,24 @@ set -e
 
 BIN_DIR="/home/claude/bin"
 TOOLS_DIR="${TOOLS_DIR:-/app/tools.d}"
-CLI_WRAPPER="$BIN_DIR/cli-wrapper"
+TOOL_CLIENT="$BIN_DIR/tool-client"
 POLL_INTERVAL="${TOOL_POLL_INTERVAL:-5}"
 
 # Generate symlinks for all tools currently in tools.d/
 sync_symlinks() {
-    [ -d "$TOOLS_DIR" ] && [ -f "$CLI_WRAPPER" ] || return 0
+    [ -d "$TOOLS_DIR" ] && [ -f "$TOOL_CLIENT" ] || return 0
 
     for tool_dir in "$TOOLS_DIR"/*/; do
         [ -d "$tool_dir" ] || continue
         tool_name="$(basename "$tool_dir")"
         symlink="$BIN_DIR/$tool_name"
 
-        # Skip cli-wrapper itself
-        [ "$tool_name" = "cli-wrapper" ] && continue
+        # Skip tool-client itself
+        [ "$tool_name" = "tool-client" ] && continue
 
         # Create symlink if missing or already a symlink (update)
         if [ ! -e "$symlink" ] || [ -L "$symlink" ]; then
-            ln -sf cli-wrapper "$symlink"
+            ln -sf tool-client "$symlink"
         fi
     done
 }
@@ -46,7 +46,7 @@ poll_for_new_tools() {
 sync_symlinks
 
 # Start background poller (only if tools.d exists and is a directory)
-if [ -d "$TOOLS_DIR" ] && [ -f "$CLI_WRAPPER" ]; then
+if [ -d "$TOOLS_DIR" ] && [ -f "$TOOL_CLIENT" ]; then
     poll_for_new_tools &
 fi
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal CLI wrapper - forwards commands to server for execution.
+"""Tool client - forwards commands to the tool server for execution.
 
 Detects tool name from argv[0] (supports symlinks).
 All validation and restrictions are enforced server-side.
@@ -14,7 +14,7 @@ import socket
 import struct
 import sys
 
-logger = logging.getLogger('cli-wrapper')
+logger = logging.getLogger('tool-client')
 
 MAX_MSG = 64 * 1024
 
@@ -27,9 +27,9 @@ def main():
     )
 
     # Socket path must be set via environment for concurrent instance support
-    socket_path = os.environ.get('CLI_SOCKET')
+    socket_path = os.environ.get('TOOL_SOCKET')
     if not socket_path:
-        logger.error('CLI_SOCKET environment variable not set')
+        logger.error('TOOL_SOCKET environment variable not set')
         return 1
 
     tool = os.path.basename(sys.argv[0])

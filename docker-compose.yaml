@@ -1,15 +1,15 @@
-# Claude Container v2 - Simplified CLI Architecture
+# Claude Container - Client/Server Architecture
 #
 # This compose file sets up:
-# - Claude container (CLI with simple wrapper)
-# - CLI server (handles all tool execution via Unix socket)
+# - claude (client): Runs Claude Code CLI with lightweight tool-client wrappers
+# - tool-server: Handles all tool execution via Unix socket
 #
-# Communication: Containers share a Unix socket at /run/plugins/cli-{instance}.sock
+# Communication: Containers share a Unix socket at /run/sockets/tool-{instance}.sock
 #
 # Tool auto-discovery:
 # - Tools are defined in tools.d/ (baked into image at build, or mounted at runtime)
 # - Server auto-registers tools from /app/tools.d/ at startup
-# - Claude container auto-generates CLI symlinks from /app/tools.d/
+# - Claude container auto-generates tool-client symlinks from /app/tools.d/
 # - To add a tool: create tools.d/{name}/tool.json (no code changes needed)
 #
 # Concurrent Instances:
@@ -19,7 +19,7 @@
 # - Container names are auto-generated as {project}_{service}_{replica}
 
 services:
-  # Claude Code container - minimal, just runs wrapper commands
+  # Claude Code container (client) - sends tool commands to the tool server
   claude:
     build:
       context: .
@@ -28,10 +28,10 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      # CLI wrappers - host directory mounted into PATH
-      - ${CLAUDE_HOME:-~/.claude-container}/cli:/home/claude/bin:ro
-      # Plugin sockets - read-only access
-      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:ro
+      # Tool client wrappers - host directory mounted into PATH
+      - ${CLAUDE_HOME:-~/.claude-container}/client:/home/claude/bin:ro
+      # Sockets - read-only access to tool server socket
+      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/sockets:ro
       # Tool definitions - for auto-generating symlinks
       - ${CLAUDE_HOME:-~/.claude-container}/tools.d:/app/tools.d:ro
       # Workspace - project directory
@@ -40,21 +40,21 @@ services:
       - PATH=/home/claude/bin:/usr/local/bin:/usr/bin:/bin
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       # Socket path includes instance ID (required, no default)
-      - CLI_SOCKET=/run/plugins/cli-${INSTANCE_ID}.sock
+      - TOOL_SOCKET=/run/sockets/tool-${INSTANCE_ID}.sock
       - TOOLS_DIR=/app/tools.d
     working_dir: /workspace
     depends_on:
-      - cli-server
+      - tool-server
 
-  # CLI server - handles all tool execution with restrictions
-  cli-server:
+  # Tool server - handles all tool execution with restrictions
+  tool-server:
     build:
       context: .
-      dockerfile: plugins/cli/Containerfile
-    image: cli-server:v2
+      dockerfile: tool-server/Containerfile
+    image: tool-server:v2
     volumes:
-      # Plugin sockets - read-write to create socket
-      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/plugins:rw
+      # Sockets - read-write to create socket
+      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/sockets:rw
       # Tool definitions - for auto-discovery and setup scripts
       - ${CLAUDE_HOME:-~/.claude-container}/tools.d:/app/tools.d:ro
       # Workspace - same as claude container
@@ -63,11 +63,11 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GH_TOKEN=${GH_TOKEN:-${GITHUB_TOKEN}}
       # Socket path includes instance ID (required, no default)
-      - CLI_SOCKET=/run/plugins/cli-${INSTANCE_ID}.sock
+      - TOOL_SOCKET=/run/sockets/tool-${INSTANCE_ID}.sock
       - TOOLS_DIR=/app/tools.d
     working_dir: /workspace
     healthcheck:
-      test: ["CMD", "python3", "-c", "import os; import socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ['CLI_SOCKET']); s.close()"]
+      test: ["CMD", "python3", "-c", "import os; import socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ['TOOL_SOCKET']); s.close()"]
       interval: 10s
       timeout: 5s
       retries: 3
