@@ -39,7 +39,7 @@ A minimal container architecture for running Claude Code with controlled access 
 - **Server-side control** - All tool execution happens in the tool server
 - **Auto-discovery** - Tools defined in `tools.d/` are auto-registered, no code changes needed
 - **Project mounting** - Current directory mounted to `/workspace` for file editing
-- **Project setup hook** - `.claude-container/setup.sh` runs at startup to install dependencies
+- **Project setup hook** - `.claude-container/config.json` specifies a setup script for dependencies
 - **Per-tool setup** - `tools.d/{tool}/setup.sh` scripts run at container start
 - **Per-tool restrictions** - `tools.d/{tool}/restricted.sh` wrappers intercept calls
 - **Hot-loading** - Tools added after startup are discovered on first use
@@ -49,44 +49,56 @@ A minimal container architecture for running Claude Code with controlled access 
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/YeahWick/claude-container.git
-cd claude-container
+# Install CLI via uv
+uv tool install git+https://github.com/YeahWick/claude-container.git
 
-# Install (creates ~/.claude-container/)
-./scripts/install.sh
+# Run setup (creates ~/.claude-container/)
+claude-container install
 
 # Set API keys
 export ANTHROPIC_API_KEY=your_key
 export GITHUB_TOKEN=your_token  # optional
 
-# Build and run
+# Build containers
+cd ~/.claude-container/repo && docker compose build
+
+# Run from any project directory
+cd /path/to/your/project
+claude-container
+```
+
+### Alternative: Clone and Run
+
+```bash
+git clone https://github.com/YeahWick/claude-container.git
+cd claude-container
+./scripts/install.sh
 docker compose build
 ./scripts/run.sh
 ```
 
 ## Project Setup
 
-When you run `./scripts/run.sh` from a directory, that directory is mounted to `/workspace` in the containers. Claude can read and edit all files in your project.
+When you run `claude-container` from a directory, that directory is mounted to `/workspace` in the containers. Claude can read and edit all files in your project.
 
 ### Automatic Dependency Installation
 
-Create a `.claude-container/setup.sh` script in your project to automatically install dependencies when the container starts:
+Create a `.claude-container/config.json` file that points to your setup script:
+
+```json
+{
+  "setup": "scripts/setup.sh"
+}
+```
+
+Then create your setup script anywhere in your project:
 
 ```bash
-# your-project/.claude-container/setup.sh
+# your-project/scripts/setup.sh
 #!/bin/bash
 set -e
-
-# Node.js
-if [ -f "package.json" ]; then
-    npm install
-fi
-
-# Python
-if [ -f "requirements.txt" ]; then
-    pip install -r requirements.txt
-fi
+npm install
+# or: pip install -r requirements.txt
 ```
 
 The setup script runs in the tool-server container before Claude starts, so all build tools are available.
@@ -132,7 +144,12 @@ See `examples/npm-tool/` for a complete example.
 
 ```
 claude-container/
+├── pyproject.toml               # Python package config (for uv tool install)
 ├── docker-compose.yaml          # Container orchestration
+│
+├── src/claude_container/        # Python CLI package
+│   ├── __init__.py
+│   └── cli.py                   # Main CLI entry point
 │
 ├── claude/                      # Claude Code container (client)
 │   ├── Containerfile            # Python + Claude Code CLI
@@ -161,16 +178,17 @@ claude-container/
 │
 └── scripts/
     ├── install.sh               # Creates ~/.claude-container/
-    ├── run.sh                   # Start/stop/status commands
+    ├── run.sh                   # Legacy bash script
     └── check-instances.sh       # List running instances
 ```
 
 ### Host Runtime Directory
 
-Created by `install.sh`, mounted into both containers:
+Created by `claude-container install`, mounted into both containers:
 
 ```
 ~/.claude-container/
+├── repo/                # Copy of repo (docker-compose.yaml, Containerfiles)
 ├── tools/               # Single mount → /app/tools (read-only)
 │   ├── bin/             # tool-client + relative symlinks
 │   │   ├── tool-client
@@ -233,15 +251,20 @@ Socket communication using length-prefixed JSON:
 
 **Response**: `{"exit_code": 0, "stdout": "...", "stderr": ""}`
 
-## Scripts
+## CLI Commands
 
 ```bash
-./scripts/run.sh          # Start Claude interactively
-./scripts/run.sh start    # Start containers in background
-./scripts/run.sh stop     # Stop all containers
-./scripts/run.sh status   # Show container status
-./scripts/run.sh logs     # View logs
-./scripts/run.sh build    # Build container images
+claude-container              # Start Claude interactively (default)
+claude-container run          # Same as above
+claude-container start        # Start containers in background
+claude-container stop         # Stop all containers
+claude-container status       # Show container status
+claude-container logs         # View logs
+claude-container build        # Build container images
+claude-container install      # Run installation script
+
+# Run from a specific directory
+claude-container -C /path/to/project
 ```
 
 ## License

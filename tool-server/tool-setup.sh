@@ -4,8 +4,8 @@
 # Runs per-tool setup scripts from tools.d/ directories, then executes the main command.
 # Each tool can have its own setup script: /app/tools.d/{tool}/setup.sh
 #
-# Also runs project-specific setup if /workspace/.claude-container/setup.sh exists.
-# This allows projects to install dependencies (npm install, pip install, etc.)
+# Also runs project-specific setup if configured in /workspace/.claude-container/config.json
+# The config file specifies the setup script path relative to the project root.
 
 set -e
 
@@ -17,7 +17,7 @@ log() {
 mkdir -p /run/sockets 2>/dev/null || true
 
 TOOLS_DIR="${TOOLS_DIR:-/app/tools.d}"
-PROJECT_SETUP="/workspace/.claude-container/setup.sh"
+PROJECT_CONFIG="/workspace/.claude-container/config.json"
 
 # Run tool-specific setup scripts from tools.d/
 if [ -d "$TOOLS_DIR" ]; then
@@ -40,17 +40,43 @@ if [ -d "$TOOLS_DIR" ]; then
     log "Found $tool_count tool(s) in $TOOLS_DIR"
 fi
 
-# Run project-specific setup if it exists
-# This allows projects to define their own dependency installation
-if [ -f "$PROJECT_SETUP" ]; then
-    log "Running project setup from $PROJECT_SETUP"
-    if bash "$PROJECT_SETUP"; then
-        log "Project setup complete"
+# Run project-specific setup if configured
+# Config file format: {"setup": "./path/to/setup.sh"}
+if [ -f "$PROJECT_CONFIG" ]; then
+    log "Found project config at $PROJECT_CONFIG"
+
+    # Extract setup script path from JSON config
+    SETUP_SCRIPT=$(python3 -c "
+import json
+import sys
+try:
+    with open('$PROJECT_CONFIG') as f:
+        config = json.load(f)
+    print(config.get('setup', ''))
+except Exception as e:
+    print('', file=sys.stderr)
+" 2>/dev/null)
+
+    if [ -n "$SETUP_SCRIPT" ]; then
+        # Resolve path relative to workspace
+        FULL_SETUP_PATH="/workspace/$SETUP_SCRIPT"
+
+        if [ -f "$FULL_SETUP_PATH" ]; then
+            log "Running project setup: $SETUP_SCRIPT"
+            cd /workspace
+            if bash "$FULL_SETUP_PATH"; then
+                log "Project setup complete"
+            else
+                log "WARNING: Project setup failed (exit $?)"
+            fi
+        else
+            log "WARNING: Setup script not found: $FULL_SETUP_PATH"
+        fi
     else
-        log "WARNING: Project setup failed (exit $?)"
+        log "No setup script configured in $PROJECT_CONFIG"
     fi
 else
-    log "No project setup found at $PROJECT_SETUP (optional)"
+    log "No project config found at $PROJECT_CONFIG (optional)"
 fi
 
 log "Setup finished, starting server"

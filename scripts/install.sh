@@ -20,7 +20,7 @@ echo ""
 # Create host directories
 # tools/ is a single mount containing both bin/ and tools.d/
 echo "Creating directories..."
-mkdir -p "$CLAUDE_HOME"/{tools/bin,tools/tools.d,sockets,config}
+mkdir -p "$CLAUDE_HOME"/{tools/bin,tools/tools.d,sockets,config,repo}
 
 # Set permissions
 # UID 1000 = container user (tool server writes to sockets)
@@ -78,6 +78,13 @@ done
 echo "Installing default configurations..."
 cp "$REPO_DIR"/config/* "$CLAUDE_HOME"/config/ 2>/dev/null || true
 
+# Copy repo files for CLI access
+echo "Installing repo files..."
+cp "$REPO_DIR"/docker-compose.yaml "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/claude "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/tool-server "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/scripts "$CLAUDE_HOME"/repo/
+
 echo ""
 echo "Installation complete!"
 echo ""
@@ -107,8 +114,11 @@ echo ""
 
 echo "Next steps:"
 echo "  1. Set your API key:     export ANTHROPIC_API_KEY=your_key"
-echo "  2. Build containers:     docker compose build"
-echo "  3. Start Claude:         ./scripts/run.sh"
+echo "  2. Build containers:     cd $CLAUDE_HOME/repo && docker compose build"
+echo "  3. Start Claude:         claude-container"
+echo ""
+echo "Or use the CLI directly:"
+echo "  cd /your/project && claude-container"
 echo ""
 echo "To add a new tool:"
 echo "  1. Create: $CLAUDE_HOME/tools/tools.d/mytool/tool.json"
