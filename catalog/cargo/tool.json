@@ -1,0 +1,6 @@
+{
+  "binary": "/usr/bin/cargo",
+  "timeout": 600,
+  "description": "Rust package manager",
+  "packages": ["cargo"]
+}

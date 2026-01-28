@@ -84,6 +84,7 @@ cp "$REPO_DIR"/docker-compose.yaml "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/claude "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/tool-server "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/scripts "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/catalog "$CLAUDE_HOME"/repo/
 
 echo ""
 echo "Installation complete!"
@@ -120,14 +121,11 @@ echo ""
 echo "Or use the CLI directly:"
 echo "  cd /your/project && claude-container"
 echo ""
-echo "To add a new tool:"
-echo "  1. Create: $CLAUDE_HOME/tools/tools.d/mytool/tool.json"
-echo '     Content: {"binary": "/usr/bin/mytool", "timeout": 300}'
-echo "  2. (Optional) Add: setup.sh, restricted.sh, restricted.py"
-echo "  3. Re-run: ./scripts/install.sh  (generates symlinks)"
-echo "  4. Rebuild: docker compose build  (if binary needs installing)"
+echo "To add tools:"
+echo "  claude-container tools list              # See available tools"
+echo "  claude-container tools add npm           # Add from catalog"
+echo "  claude-container tools add mytool --url https://github.com/user/tool"
 echo ""
-echo "Or from a tool repo:"
-echo "  cp -r /path/to/my-tool-repo $CLAUDE_HOME/tools/tools.d/mytool"
-echo "  ./scripts/install.sh"
+echo "After adding tools, rebuild containers if they need new packages:"
+echo "  claude-container build"
 echo ""

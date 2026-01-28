@@ -1,0 +1,36 @@
+{
+  "tools": {
+    "npm": {
+      "description": "Node.js package manager",
+      "category": "javascript"
+    },
+    "node": {
+      "description": "Node.js JavaScript runtime",
+      "category": "javascript"
+    },
+    "python": {
+      "description": "Python interpreter with pip",
+      "category": "python"
+    },
+    "cargo": {
+      "description": "Rust package manager",
+      "category": "rust"
+    },
+    "go": {
+      "description": "Go programming language",
+      "category": "go"
+    },
+    "make": {
+      "description": "GNU Make build tool",
+      "category": "build"
+    },
+    "curl": {
+      "description": "Command-line HTTP client",
+      "category": "network"
+    },
+    "jq": {
+      "description": "JSON processor",
+      "category": "utility"
+    }
+  }
+}

@@ -40,19 +40,29 @@ if [ -d "$TOOLS_DIR" ]; then
     log "Found $tool_count tool(s) in $TOOLS_DIR"
 fi
 
-# Run project-specific setup if configured
-# Config file format: {"setup": "./path/to/setup.sh"}
+# Run project-specific server setup if configured
+# Config formats:
+#   New: {"setup": {"server": "path/to/setup.sh", "client": "path/to/client.sh"}}
+#   Legacy: {"setup": "path/to/setup.sh"}
 if [ -f "$PROJECT_CONFIG" ]; then
     log "Found project config at $PROJECT_CONFIG"
 
-    # Extract setup script path from JSON config
+    # Extract server setup script path from JSON config
     SETUP_SCRIPT=$(python3 -c "
 import json
 import sys
 try:
     with open('$PROJECT_CONFIG') as f:
         config = json.load(f)
-    print(config.get('setup', ''))
+    setup = config.get('setup', '')
+    # New format: setup is a dict with 'server' key
+    if isinstance(setup, dict):
+        print(setup.get('server', ''))
+    # Legacy format: setup is a string path
+    elif isinstance(setup, str):
+        print(setup)
+    else:
+        print('')
 except Exception as e:
     print('', file=sys.stderr)
 " 2>/dev/null)
@@ -62,18 +72,18 @@ except Exception as e:
         FULL_SETUP_PATH="/workspace/$SETUP_SCRIPT"
 
         if [ -f "$FULL_SETUP_PATH" ]; then
-            log "Running project setup: $SETUP_SCRIPT"
+            log "Running server setup: $SETUP_SCRIPT"
             cd /workspace
             if bash "$FULL_SETUP_PATH"; then
-                log "Project setup complete"
+                log "Server setup complete"
             else
-                log "WARNING: Project setup failed (exit $?)"
+                log "WARNING: Server setup failed (exit $?)"
             fi
         else
-            log "WARNING: Setup script not found: $FULL_SETUP_PATH"
+            log "WARNING: Server setup script not found: $FULL_SETUP_PATH"
         fi
     else
-        log "No setup script configured in $PROJECT_CONFIG"
+        log "No server setup script configured in $PROJECT_CONFIG"
     fi
 else
     log "No project config found at $PROJECT_CONFIG (optional)"

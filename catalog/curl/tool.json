@@ -1,0 +1,6 @@
+{
+  "binary": "/usr/bin/curl",
+  "timeout": 120,
+  "description": "Command-line HTTP client",
+  "packages": ["curl"]
+}

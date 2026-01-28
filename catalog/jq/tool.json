@@ -1,0 +1,6 @@
+{
+  "binary": "/usr/bin/jq",
+  "timeout": 60,
+  "description": "JSON processor",
+  "packages": ["jq"]
+}

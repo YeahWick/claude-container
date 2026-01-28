@@ -1,3 +1,6 @@
 {
-  "setup": "scripts/setup.sh"
+  "setup": {
+    "client": "scripts/client-setup.sh",
+    "server": "scripts/server-setup.sh"
+  }
 }
