@@ -38,6 +38,8 @@ A minimal container architecture for running Claude Code with controlled access 
 - **Minimal client** - Claude container only has lightweight tool-client wrappers
 - **Server-side control** - All tool execution happens in the tool server
 - **Auto-discovery** - Tools defined in `tools.d/` are auto-registered, no code changes needed
+- **Project mounting** - Current directory mounted to `/workspace` for file editing
+- **Project setup hook** - `.claude-container/setup.sh` runs at startup to install dependencies
 - **Per-tool setup** - `tools.d/{tool}/setup.sh` scripts run at container start
 - **Per-tool restrictions** - `tools.d/{tool}/restricted.sh` wrappers intercept calls
 - **Hot-loading** - Tools added after startup are discovered on first use
@@ -62,6 +64,34 @@ export GITHUB_TOKEN=your_token  # optional
 docker compose build
 ./scripts/run.sh
 ```
+
+## Project Setup
+
+When you run `./scripts/run.sh` from a directory, that directory is mounted to `/workspace` in the containers. Claude can read and edit all files in your project.
+
+### Automatic Dependency Installation
+
+Create a `.claude-container/setup.sh` script in your project to automatically install dependencies when the container starts:
+
+```bash
+# your-project/.claude-container/setup.sh
+#!/bin/bash
+set -e
+
+# Node.js
+if [ -f "package.json" ]; then
+    npm install
+fi
+
+# Python
+if [ -f "requirements.txt" ]; then
+    pip install -r requirements.txt
+fi
+```
+
+The setup script runs in the tool-server container before Claude starts, so all build tools are available.
+
+See `examples/project-setup/` for a complete example.
 
 ## Adding Tools
 
@@ -126,7 +156,8 @@ claude-container/
 │       └── setup.sh             # Git configuration at startup
 │
 ├── examples/                    # Example tool configurations
-│   └── npm-tool/
+│   ├── npm-tool/                # Tool definition example
+│   └── project-setup/           # Project setup hook example
 │
 └── scripts/
     ├── install.sh               # Creates ~/.claude-container/
