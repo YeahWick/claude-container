@@ -16,7 +16,7 @@ A minimal container architecture for running Claude Code with controlled access 
 │  │         ↓               │       │         ↓                      │  │
 │  │  git push origin main   │       │  restricted/git.sh (optional)  │  │
 │  │         ↓               │       │         ↓                      │  │
-│  │  /home/claude/bin/git   │ sock  │  /usr/bin/git push origin main │  │
+│  │  /app/tools/bin/git     │ sock  │  /usr/bin/git push origin main │  │
 │  │  (tool-client)  ────────┼───────┼→ (real binary)                 │  │
 │  │                         │       │                                │  │
 │  └─────────────────────────┘       └────────────────────────────────┘  │
@@ -42,6 +42,7 @@ A minimal container architecture for running Claude Code with controlled access 
 - **Per-tool restrictions** - `tools.d/{tool}/restricted.sh` wrappers intercept calls
 - **Hot-loading** - Tools added after startup are discovered on first use
 - **Concurrent instances** - Multiple projects can run simultaneously
+- **Single mount** - `bin/` and `tools.d/` share one host directory for clean relative symlinks
 
 ## Quick Start
 
@@ -105,9 +106,9 @@ claude-container/
 │
 ├── claude/                      # Claude Code container (client)
 │   ├── Containerfile            # Python + Claude Code CLI
-│   └── entrypoint.sh           # Auto-generates tool symlinks
+│   └── entrypoint.sh           # Minimal entrypoint (exec only)
 │
-├── client/                      # Tool client (mounted into Claude container)
+├── client/                      # Tool client (source for install)
 │   └── tool-client              # Socket client script (~90 lines)
 │
 ├── tool-server/                 # Tool execution server
@@ -131,6 +132,24 @@ claude-container/
     ├── install.sh               # Creates ~/.claude-container/
     ├── run.sh                   # Start/stop/status commands
     └── check-instances.sh       # List running instances
+```
+
+### Host Runtime Directory
+
+Created by `install.sh`, mounted into both containers:
+
+```
+~/.claude-container/
+├── tools/               # Single mount → /app/tools (read-only)
+│   ├── bin/             # tool-client + relative symlinks
+│   │   ├── tool-client
+│   │   ├── git -> tool-client
+│   │   └── ...
+│   └── tools.d/         # Tool definitions
+│       ├── git/
+│       └── ...
+├── sockets/             # Unix sockets (one per instance)
+└── config/              # Configuration files
 ```
 
 ## Tool Customization

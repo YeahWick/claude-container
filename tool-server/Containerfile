@@ -1,7 +1,7 @@
 # Tool Server Container
 #
 # Executes tool commands on behalf of the Claude client container.
-# Tools are auto-discovered from /app/tools.d/ at startup.
+# Tools are auto-discovered from /app/tools/tools.d/ at startup.
 #
 # To add a new tool, create a directory in tools.d/ with a tool.json:
 #   tools.d/mytool/tool.json  -> {"binary": "/usr/bin/mytool", "timeout": 300}
@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 -s /bin/bash tools
 
 # Create directories
-RUN mkdir -p /run/sockets /workspace /app/tools.d /app/restricted \
+RUN mkdir -p /run/sockets /workspace /app/tools/tools.d /app/restricted \
     && chown -R tools:tools /run/sockets /workspace /app
 
 # Copy server code and tool caller
@@ -32,11 +32,11 @@ COPY tool-server/tool-setup.sh /app/tool-setup.sh
 COPY tool-server/__init__.py /app/__init__.py
 
 # Copy tool definitions (auto-discovered at startup)
-COPY tools.d/ /app/tools.d/
+COPY tools.d/ /app/tools/tools.d/
 
 # Make scripts executable
 RUN chmod +x /app/tool-setup.sh \
-    && find /app/tools.d -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+    && find /app/tools/tools.d -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
 
 # Set ownership
 RUN chown -R tools:tools /app
@@ -46,7 +46,7 @@ ENV TOOL_SOCKET=/run/sockets/tool.sock
 ENV PYTHONUNBUFFERED=1
 ENV WORKSPACE=/workspace
 ENV RESTRICTED_DIR=/app/restricted
-ENV TOOLS_DIR=/app/tools.d
+ENV TOOLS_DIR=/app/tools/tools.d
 
 # Switch to non-root user
 USER tools

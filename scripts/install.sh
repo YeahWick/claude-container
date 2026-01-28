@@ -2,6 +2,8 @@
 # Install script for Claude Container
 #
 # Sets up host directories, copies tool definitions, and generates client wrappers.
+# The tools/ directory contains both bin/ (client + symlinks) and tools.d/ (definitions)
+# so that bin symlinks use simple relative paths to tool-client.
 
 set -e
 
@@ -16,21 +18,23 @@ echo "Installing to: $CLAUDE_HOME"
 echo ""
 
 # Create host directories
+# tools/ is a single mount containing both bin/ and tools.d/
 echo "Creating directories..."
-mkdir -p "$CLAUDE_HOME"/{client,sockets,config,tools.d}
+mkdir -p "$CLAUDE_HOME"/{tools/bin,tools/tools.d,sockets,config}
 
 # Set permissions
 # UID 1000 = container user (tool server writes to sockets)
 echo "Setting permissions..."
-chmod 755 "$CLAUDE_HOME"/client
+chmod 755 "$CLAUDE_HOME"/tools
+chmod 755 "$CLAUDE_HOME"/tools/bin
+chmod 755 "$CLAUDE_HOME"/tools/tools.d
 chmod 770 "$CLAUDE_HOME"/sockets
 chmod 755 "$CLAUDE_HOME"/config
-chmod 755 "$CLAUDE_HOME"/tools.d
 
 # Copy tool-client script
 echo "Installing tool client..."
-cp "$REPO_DIR"/client/tool-client "$CLAUDE_HOME"/client/
-chmod +x "$CLAUDE_HOME"/client/tool-client
+cp "$REPO_DIR"/client/tool-client "$CLAUDE_HOME"/tools/bin/
+chmod +x "$CLAUDE_HOME"/tools/bin/tool-client
 
 # Copy built-in tool definitions
 echo "Installing tool definitions..."
@@ -38,7 +42,7 @@ if [ -d "$REPO_DIR/tools.d" ]; then
     for tool_dir in "$REPO_DIR"/tools.d/*/; do
         [ -d "$tool_dir" ] || continue
         tool_name="$(basename "$tool_dir")"
-        dest="$CLAUDE_HOME/tools.d/$tool_name"
+        dest="$CLAUDE_HOME/tools/tools.d/$tool_name"
 
         # Copy tool definition (don't overwrite user customizations)
         if [ ! -d "$dest" ]; then
@@ -55,16 +59,17 @@ if [ -d "$REPO_DIR/tools.d" ]; then
 fi
 
 # Auto-generate client symlinks from tools.d
+# Symlinks are relative: git -> tool-client (both in bin/)
 echo "Generating client symlinks..."
-for tool_dir in "$CLAUDE_HOME"/tools.d/*/; do
+for tool_dir in "$CLAUDE_HOME"/tools/tools.d/*/; do
     [ -d "$tool_dir" ] || continue
     tool_name="$(basename "$tool_dir")"
-    symlink="$CLAUDE_HOME/client/$tool_name"
+    symlink="$CLAUDE_HOME/tools/bin/$tool_name"
 
     # Skip if tool name is tool-client
     [ "$tool_name" = "tool-client" ] && continue
 
-    # Create or update symlink
+    # Create or update symlink (relative within bin/)
     ln -sf tool-client "$symlink"
     echo "  $tool_name -> tool-client"
 done
@@ -78,15 +83,16 @@ echo "Installation complete!"
 echo ""
 echo "Directory structure:"
 echo "  $CLAUDE_HOME/"
-echo "  ├── client/        # Tool client + auto-generated symlinks"
-echo "  ├── sockets/       # Tool server Unix sockets (one per instance)"
-echo "  ├── config/        # Configuration files"
-echo "  └── tools.d/       # Tool definitions (auto-discovered)"
+echo "  ├── tools/           # Single mount for client + tool definitions"
+echo "  │   ├── bin/         # tool-client + auto-generated symlinks"
+echo "  │   └── tools.d/     # Tool definitions (auto-discovered)"
+echo "  ├── sockets/         # Tool server Unix sockets (one per instance)"
+echo "  └── config/          # Configuration files"
 echo ""
 
 # Show discovered tools
 echo "Registered tools:"
-for tool_dir in "$CLAUDE_HOME"/tools.d/*/; do
+for tool_dir in "$CLAUDE_HOME"/tools/tools.d/*/; do
     [ -d "$tool_dir" ] || continue
     tool_name="$(basename "$tool_dir")"
     has_manifest="no"
@@ -105,13 +111,13 @@ echo "  2. Build containers:     docker compose build"
 echo "  3. Start Claude:         ./scripts/run.sh"
 echo ""
 echo "To add a new tool:"
-echo "  1. Create: $CLAUDE_HOME/tools.d/mytool/tool.json"
+echo "  1. Create: $CLAUDE_HOME/tools/tools.d/mytool/tool.json"
 echo '     Content: {"binary": "/usr/bin/mytool", "timeout": 300}'
 echo "  2. (Optional) Add: setup.sh, restricted.sh, restricted.py"
 echo "  3. Re-run: ./scripts/install.sh  (generates symlinks)"
 echo "  4. Rebuild: docker compose build  (if binary needs installing)"
 echo ""
 echo "Or from a tool repo:"
-echo "  cp -r /path/to/my-tool-repo $CLAUDE_HOME/tools.d/mytool"
+echo "  cp -r /path/to/my-tool-repo $CLAUDE_HOME/tools/tools.d/mytool"
 echo "  ./scripts/install.sh"
 echo ""

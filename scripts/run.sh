@@ -35,7 +35,7 @@ export INSTANCE_ID
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claude-$INSTANCE_ID}"
 
 # Check if installed
-if [ ! -d "$CLAUDE_HOME/client" ]; then
+if [ ! -d "$CLAUDE_HOME/tools/bin" ]; then
     echo "Error: Claude Container not installed."
     echo "Run: ./scripts/install.sh"
     exit 1
