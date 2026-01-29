@@ -1,0 +1,6 @@
+{
+  "binary": "/usr/bin/python3",
+  "timeout": 300,
+  "description": "Python interpreter",
+  "packages": ["python3", "python3-pip"]
+}

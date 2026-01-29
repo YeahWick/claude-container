@@ -38,6 +38,8 @@ A minimal container architecture for running Claude Code with controlled access 
 - **Minimal client** - Claude container only has lightweight tool-client wrappers
 - **Server-side control** - All tool execution happens in the tool server
 - **Auto-discovery** - Tools defined in `tools.d/` are auto-registered, no code changes needed
+- **Project mounting** - Current directory mounted to `/workspace` for file editing
+- **Project setup hook** - `.claude-container/config.json` specifies a setup script for dependencies
 - **Per-tool setup** - `tools.d/{tool}/setup.sh` scripts run at container start
 - **Per-tool restrictions** - `tools.d/{tool}/restricted.sh` wrappers intercept calls
 - **Hot-loading** - Tools added after startup are discovered on first use
@@ -47,54 +49,114 @@ A minimal container architecture for running Claude Code with controlled access 
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/YeahWick/claude-container.git
-cd claude-container
+# Install CLI via uv
+uv tool install git+https://github.com/YeahWick/claude-container.git
 
-# Install (creates ~/.claude-container/)
-./scripts/install.sh
+# Run setup (creates ~/.claude-container/)
+claude-container install
 
 # Set API keys
 export ANTHROPIC_API_KEY=your_key
 export GITHUB_TOKEN=your_token  # optional
 
-# Build and run
+# Build containers
+cd ~/.claude-container/repo && docker compose build
+
+# Run from any project directory
+cd /path/to/your/project
+claude-container
+```
+
+### Alternative: Clone and Run
+
+```bash
+git clone https://github.com/YeahWick/claude-container.git
+cd claude-container
+./scripts/install.sh
 docker compose build
 ./scripts/run.sh
 ```
 
-## Adding Tools
+## Project Setup
 
-Create a directory in `tools.d/` with a `tool.json` manifest. No code changes needed.
+When you run `claude-container` from a directory, that directory is mounted to `/workspace` in the containers. Claude can read and edit all files in your project.
 
-**Example** - adding `npm`:
+### Automatic Dependency Installation
 
-1. Create the tool definition:
-   ```bash
-   mkdir -p tools.d/npm
-   echo '{"binary": "/usr/bin/npm", "timeout": 600}' > tools.d/npm/tool.json
-   ```
+Create a `.claude-container/config.json` file that specifies setup scripts for each container:
 
-2. (Optional) Add a setup script (`tools.d/npm/setup.sh`):
-   ```bash
-   npm config set cache /tmp/npm-cache
-   ```
+```json
+{
+  "setup": {
+    "server": "scripts/server-setup.sh",
+    "client": "scripts/client-setup.sh"
+  }
+}
+```
 
-3. (Optional) Add a restriction wrapper (`tools.d/npm/restricted.sh`):
-   ```bash
-   #!/bin/bash
-   case "$1" in
-       publish|adduser) echo "Blocked" >&2; exit 1 ;;
-   esac
-   exec "$TOOL_BINARY" "$@"
-   ```
+- **server** - Runs in the tool-server container (has build tools: npm, pip, cargo, etc.)
+- **client** - Runs in the Claude container (for client-side configuration)
 
-4. Install the binary in `tool-server/Containerfile`:
-   ```dockerfile
-   RUN apt-get update && apt-get install -y npm
-   ```
+Example server setup script:
 
-5. Rebuild: `docker compose build tool-server`
+```bash
+# your-project/scripts/server-setup.sh
+#!/bin/bash
+set -e
+npm install
+# or: pip install -r requirements.txt
+```
+
+See `examples/project-setup/` for a complete example.
+
+## Managing Tools
+
+### Adding Tools from Catalog
+
+List and add tools from the built-in catalog:
+
+```bash
+# List available tools
+claude-container tools list
+
+# Add a tool from the catalog
+claude-container tools add npm
+claude-container tools add python
+
+# Rebuild containers after adding tools (if they need new packages)
+claude-container build
+```
+
+### Adding Tools from External Repos
+
+Add custom tools from any git repository:
+
+```bash
+claude-container tools add mytool --url https://github.com/user/tool-repo
+```
+
+The repository must contain a `tool.json` file at its root.
+
+### Removing Tools
+
+```bash
+claude-container tools remove npm
+```
+
+### Manual Tool Setup
+
+Create a directory in `tools.d/` with a `tool.json` manifest:
+
+```bash
+mkdir -p ~/.claude-container/tools/tools.d/npm
+cat > ~/.claude-container/tools/tools.d/npm/tool.json << 'EOF'
+{"binary": "/usr/bin/npm", "timeout": 600}
+EOF
+```
+
+Optionally add:
+- `setup.sh` - Run at container start
+- `restricted.sh` - Intercept and filter commands
 
 See `examples/npm-tool/` for a complete example.
 
@@ -102,7 +164,12 @@ See `examples/npm-tool/` for a complete example.
 
 ```
 claude-container/
+├── pyproject.toml               # Python package config (for uv tool install)
 ├── docker-compose.yaml          # Container orchestration
+│
+├── src/claude_container/        # Python CLI package
+│   ├── __init__.py
+│   └── cli.py                   # Main CLI entry point
 │
 ├── claude/                      # Claude Code container (client)
 │   ├── Containerfile            # Python + Claude Code CLI
@@ -125,21 +192,29 @@ claude-container/
 │       ├── tool.json            # {"binary": "/usr/bin/git", "timeout": 300}
 │       └── setup.sh             # Git configuration at startup
 │
+├── catalog/                     # Built-in tool catalog
+│   ├── index.json               # Tool metadata index
+│   ├── npm/                     # npm tool definition
+│   ├── python/                  # Python tool definition
+│   └── ...
+│
 ├── examples/                    # Example tool configurations
-│   └── npm-tool/
+│   ├── npm-tool/                # Tool definition example
+│   └── project-setup/           # Project setup hook example
 │
 └── scripts/
     ├── install.sh               # Creates ~/.claude-container/
-    ├── run.sh                   # Start/stop/status commands
+    ├── run.sh                   # Legacy bash script
     └── check-instances.sh       # List running instances
 ```
 
 ### Host Runtime Directory
 
-Created by `install.sh`, mounted into both containers:
+Created by `claude-container install`, mounted into both containers:
 
 ```
 ~/.claude-container/
+├── repo/                # Copy of repo (docker-compose.yaml, Containerfiles)
 ├── tools/               # Single mount → /app/tools (read-only)
 │   ├── bin/             # tool-client + relative symlinks
 │   │   ├── tool-client
@@ -202,15 +277,27 @@ Socket communication using length-prefixed JSON:
 
 **Response**: `{"exit_code": 0, "stdout": "...", "stderr": ""}`
 
-## Scripts
+## CLI Commands
 
 ```bash
-./scripts/run.sh          # Start Claude interactively
-./scripts/run.sh start    # Start containers in background
-./scripts/run.sh stop     # Stop all containers
-./scripts/run.sh status   # Show container status
-./scripts/run.sh logs     # View logs
-./scripts/run.sh build    # Build container images
+# Container management
+claude-container              # Start Claude interactively (default)
+claude-container run          # Same as above
+claude-container start        # Start containers in background
+claude-container stop         # Stop all containers
+claude-container status       # Show container status
+claude-container logs         # View logs
+claude-container build        # Build container images
+claude-container install      # Run installation script
+
+# Tool management
+claude-container tools list   # List available and installed tools
+claude-container tools add <name>           # Add tool from catalog
+claude-container tools add <name> --url <url>  # Add tool from git repo
+claude-container tools remove <name>        # Remove an installed tool
+
+# Run from a specific directory
+claude-container -C /path/to/project
 ```
 
 ## License

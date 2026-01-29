@@ -20,7 +20,7 @@ echo ""
 # Create host directories
 # tools/ is a single mount containing both bin/ and tools.d/
 echo "Creating directories..."
-mkdir -p "$CLAUDE_HOME"/{tools/bin,tools/tools.d,sockets,config}
+mkdir -p "$CLAUDE_HOME"/{tools/bin,tools/tools.d,sockets,config,repo}
 
 # Set permissions
 # UID 1000 = container user (tool server writes to sockets)
@@ -78,6 +78,14 @@ done
 echo "Installing default configurations..."
 cp "$REPO_DIR"/config/* "$CLAUDE_HOME"/config/ 2>/dev/null || true
 
+# Copy repo files for CLI access
+echo "Installing repo files..."
+cp "$REPO_DIR"/docker-compose.yaml "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/claude "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/tool-server "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/scripts "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/catalog "$CLAUDE_HOME"/repo/
+
 echo ""
 echo "Installation complete!"
 echo ""
@@ -107,17 +115,17 @@ echo ""
 
 echo "Next steps:"
 echo "  1. Set your API key:     export ANTHROPIC_API_KEY=your_key"
-echo "  2. Build containers:     docker compose build"
-echo "  3. Start Claude:         ./scripts/run.sh"
+echo "  2. Build containers:     cd $CLAUDE_HOME/repo && docker compose build"
+echo "  3. Start Claude:         claude-container"
 echo ""
-echo "To add a new tool:"
-echo "  1. Create: $CLAUDE_HOME/tools/tools.d/mytool/tool.json"
-echo '     Content: {"binary": "/usr/bin/mytool", "timeout": 300}'
-echo "  2. (Optional) Add: setup.sh, restricted.sh, restricted.py"
-echo "  3. Re-run: ./scripts/install.sh  (generates symlinks)"
-echo "  4. Rebuild: docker compose build  (if binary needs installing)"
+echo "Or use the CLI directly:"
+echo "  cd /your/project && claude-container"
 echo ""
-echo "Or from a tool repo:"
-echo "  cp -r /path/to/my-tool-repo $CLAUDE_HOME/tools/tools.d/mytool"
-echo "  ./scripts/install.sh"
+echo "To add tools:"
+echo "  claude-container tools list              # See available tools"
+echo "  claude-container tools add npm           # Add from catalog"
+echo "  claude-container tools add mytool --url https://github.com/user/tool"
+echo ""
+echo "After adding tools, rebuild containers if they need new packages:"
+echo "  claude-container build"
 echo ""

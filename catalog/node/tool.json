@@ -1,0 +1,6 @@
+{
+  "binary": "/usr/local/bin/node",
+  "timeout": 300,
+  "description": "Node.js JavaScript runtime",
+  "packages": ["nodejs"]
+}

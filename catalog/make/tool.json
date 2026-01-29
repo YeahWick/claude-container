@@ -1,0 +1,6 @@
+{
+  "binary": "/usr/bin/make",
+  "timeout": 600,
+  "description": "GNU Make build tool",
+  "packages": ["make"]
+}

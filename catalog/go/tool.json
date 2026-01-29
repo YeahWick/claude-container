@@ -1,0 +1,6 @@
+{
+  "binary": "/usr/bin/go",
+  "timeout": 600,
+  "description": "Go programming language",
+  "packages": ["golang"]
+}
