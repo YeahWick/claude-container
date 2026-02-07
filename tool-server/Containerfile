@@ -1,4 +1,4 @@
-# Tool Server Container
+# Tool Server Container (built with Podman)
 #
 # Executes tool commands on behalf of the Claude client container.
 # Tools are auto-discovered from /app/tools/tools.d/ at startup.
@@ -13,9 +13,13 @@
 
 FROM python:3.12-slim
 
-# Install tools (add more as needed)
+# Extra packages injected by 'claude-container build' from catalog tool definitions
+ARG EXTRA_PACKAGES=""
+
+# Install base tools + any extra packages from catalog tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    ${EXTRA_PACKAGES} \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

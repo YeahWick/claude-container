@@ -9,7 +9,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude-container}"
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.config/claude-container}"
 
 echo "Claude Container - Installation"
 echo "================================"
@@ -78,9 +78,21 @@ done
 echo "Installing default configurations..."
 cp "$REPO_DIR"/config/* "$CLAUDE_HOME"/config/ 2>/dev/null || true
 
+# Create .env template if it doesn't exist
+if [ ! -f "$CLAUDE_HOME/.env" ]; then
+    cat > "$CLAUDE_HOME/.env" << 'EOF'
+# Claude Container environment configuration
+# Uncomment and set your API keys:
+
+# ANTHROPIC_API_KEY=your_key_here
+# GITHUB_TOKEN=your_token_here
+EOF
+    echo "Created .env template at $CLAUDE_HOME/.env"
+fi
+
 # Copy repo files for CLI access
 echo "Installing repo files..."
-cp "$REPO_DIR"/docker-compose.yaml "$CLAUDE_HOME"/repo/
+cp "$REPO_DIR"/podman-compose.yaml "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/claude "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/tool-server "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/scripts "$CLAUDE_HOME"/repo/
@@ -95,7 +107,8 @@ echo "  ├── tools/           # Single mount for client + tool definitions"
 echo "  │   ├── bin/         # tool-client + auto-generated symlinks"
 echo "  │   └── tools.d/     # Tool definitions (auto-discovered)"
 echo "  ├── sockets/         # Tool server Unix sockets (one per instance)"
-echo "  └── config/          # Configuration files"
+echo "  ├── config/          # Configuration files"
+echo "  └── .env             # API keys (ANTHROPIC_API_KEY, GITHUB_TOKEN)"
 echo ""
 
 # Show discovered tools
@@ -114,18 +127,18 @@ done
 echo ""
 
 echo "Next steps:"
-echo "  1. Set your API key:     export ANTHROPIC_API_KEY=your_key"
-echo "  2. Build containers:     cd $CLAUDE_HOME/repo && docker compose build"
+echo "  1. Set your API key:     echo 'ANTHROPIC_API_KEY=your_key' >> $CLAUDE_HOME/.env"
+echo "  2. Build containers:     claude-container build"
 echo "  3. Start Claude:         claude-container"
 echo ""
-echo "Or use the CLI directly:"
-echo "  cd /your/project && claude-container"
+echo "Or run everything at once:"
+echo "  claude-container setup"
 echo ""
 echo "To add tools:"
 echo "  claude-container tools list              # See available tools"
 echo "  claude-container tools add npm           # Add from catalog"
 echo "  claude-container tools add mytool --url https://github.com/user/tool"
 echo ""
-echo "After adding tools, rebuild containers if they need new packages:"
+echo "After adding tools, rebuild containers:"
 echo "  claude-container build"
 echo ""

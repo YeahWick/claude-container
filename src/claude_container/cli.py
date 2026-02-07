@@ -13,13 +13,16 @@ import time
 from pathlib import Path
 
 
+COMPOSE_FILE = "podman-compose.yaml"
+
+
 def get_claude_home() -> Path:
     """Get the Claude Container home directory."""
-    return Path(os.environ.get("CLAUDE_HOME", Path.home() / ".claude-container"))
+    return Path(os.environ.get("CLAUDE_HOME", Path.home() / ".config" / "claude-container"))
 
 
 def get_repo_dir() -> Path:
-    """Get the repository directory where docker-compose.yaml lives."""
+    """Get the repository directory where podman-compose.yaml lives."""
     claude_home = get_claude_home()
     # The repo is installed at CLAUDE_HOME/repo
     repo_dir = claude_home / "repo"
@@ -28,10 +31,10 @@ def get_repo_dir() -> Path:
     # Fallback: check if we're running from the repo itself
     script_dir = Path(__file__).parent
     for parent in [script_dir, script_dir.parent, script_dir.parent.parent]:
-        if (parent / "docker-compose.yaml").exists():
+        if (parent / COMPOSE_FILE).exists():
             return parent
     raise RuntimeError(
-        f"Cannot find docker-compose.yaml. "
+        f"Cannot find {COMPOSE_FILE}. "
         f"Expected at {repo_dir} or in package directory."
     )
 
@@ -59,14 +62,107 @@ def check_installation(claude_home: Path) -> bool:
     return tools_bin.is_dir()
 
 
-def run_docker_compose(
+def load_env_file(claude_home: Path) -> dict[str, str]:
+    """Load environment variables from .env file if it exists."""
+    env_vars = {}
+    env_file = claude_home / ".env"
+    if env_file.exists():
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip("\"'")
+                    env_vars[key] = value
+    return env_vars
+
+
+def apply_env_file(claude_home: Path) -> None:
+    """Apply .env file variables to the current environment (without overriding)."""
+    env_vars = load_env_file(claude_home)
+    for key, value in env_vars.items():
+        if key not in os.environ:
+            os.environ[key] = value
+
+
+def find_compose_command() -> list[str]:
+    """Find the available compose command (podman-compose preferred)."""
+    # Try podman-compose first
+    if shutil.which("podman-compose"):
+        return ["podman-compose"]
+    # Try podman compose (plugin style)
+    try:
+        result = subprocess.run(
+            ["podman", "compose", "version"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return ["podman", "compose"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return []
+
+
+def find_container_runtime() -> str:
+    """Find the available container runtime."""
+    if shutil.which("podman"):
+        return "podman"
+    return ""
+
+
+def check_podman_running() -> bool:
+    """Check if Podman machine is running (macOS) or Podman is available."""
+    runtime = find_container_runtime()
+    if not runtime:
+        return False
+    try:
+        result = subprocess.run(
+            [runtime, "info"],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def images_exist(repo_dir: Path, env: dict[str, str]) -> bool:
+    """Check if container images have been built."""
+    runtime = find_container_runtime()
+    if not runtime:
+        return False
+    for image in ["claude-code:v2", "tool-server:v2"]:
+        try:
+            result = subprocess.run(
+                [runtime, "image", "exists", image],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+    return True
+
+
+def run_compose(
     repo_dir: Path,
     args: list[str],
     env: dict[str, str],
     capture_output: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Run docker compose with the given arguments."""
-    cmd = ["docker", "compose", *args]
+    """Run podman-compose with the given arguments."""
+    compose_cmd = find_compose_command()
+    if not compose_cmd:
+        print("Error: podman-compose not found.")
+        print("Install it with: pip install podman-compose")
+        print("  or: brew install podman-compose")
+        sys.exit(1)
+    cmd = [*compose_cmd, "-f", COMPOSE_FILE, *args]
     return subprocess.run(
         cmd,
         cwd=repo_dir,
@@ -84,9 +180,18 @@ def cmd_run(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> in
     print(f"Project:  {env['COMPOSE_PROJECT_NAME']}")
     print()
 
+    # Auto-build if images are missing
+    if not images_exist(repo_dir, env):
+        print("Container images not found. Building...")
+        result = run_compose(repo_dir, ["build"], env)
+        if result.returncode != 0:
+            print("Error: Failed to build container images.")
+            return result.returncode
+        print()
+
     # Start tool server first
     print("Starting tool server...")
-    result = run_docker_compose(repo_dir, ["up", "-d", "tool-server"], env)
+    result = run_compose(repo_dir, ["up", "-d", "tool-server"], env)
     if result.returncode != 0:
         return result.returncode
 
@@ -99,12 +204,24 @@ def cmd_run(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> in
         time.sleep(0.5)
 
     if not socket_file.exists():
-        print(f"Warning: Tool server socket not ready at {socket_file}")
-        print("Check: docker compose logs tool-server")
+        print(f"Error: Tool server socket not ready at {socket_file}")
+        print()
+        # Show tool-server logs to help debug
+        print("Tool server logs:")
+        print("-" * 40)
+        run_compose(
+            repo_dir,
+            ["logs", "--tail=20", "tool-server"],
+            env,
+        )
+        print("-" * 40)
+        print()
+        print("Try: claude-container logs tool-server")
+        return 1
 
     # Start Claude client interactively
     print("Starting Claude...")
-    result = run_docker_compose(repo_dir, ["run", "--rm", "claude"], env)
+    result = run_compose(repo_dir, ["run", "--rm", "claude"], env)
     return result.returncode
 
 
@@ -117,12 +234,19 @@ def cmd_start(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> 
     print(f"Project:  {env['COMPOSE_PROJECT_NAME']}")
     print()
 
+    # Auto-build if images are missing
+    if not images_exist(repo_dir, env):
+        print("Container images not found. Building...")
+        result = run_compose(repo_dir, ["build"], env)
+        if result.returncode != 0:
+            return result.returncode
+        print()
+
     print("Starting all containers...")
-    result = run_docker_compose(repo_dir, ["up", "-d"], env)
+    result = run_compose(repo_dir, ["up", "-d"], env)
     if result.returncode == 0:
         print()
-        print("Containers started. Use 'docker compose logs -f' to view logs.")
-        print("To connect to Claude: docker compose exec claude bash")
+        print("Containers started. Use 'claude-container logs' to view logs.")
         print(f"Socket: {claude_home}/sockets/tool-{instance_id}.sock")
     return result.returncode
 
@@ -137,7 +261,7 @@ def cmd_stop(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> i
     print()
 
     print("Stopping all containers...")
-    result = run_docker_compose(repo_dir, ["down"], env)
+    result = run_compose(repo_dir, ["down"], env)
 
     # Clean up instance socket
     socket_file = claude_home / "sockets" / f"tool-{instance_id}.sock"
@@ -158,7 +282,7 @@ def cmd_status(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) ->
     print()
 
     print("Container status:")
-    run_docker_compose(repo_dir, ["ps"], env)
+    run_compose(repo_dir, ["ps"], env)
     print()
 
     print("Instance socket:")
@@ -186,25 +310,252 @@ def cmd_logs(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> i
     log_args = ["logs", "-f"]
     if args.service:
         log_args.append(args.service)
-    result = run_docker_compose(repo_dir, log_args, env)
+    result = run_compose(repo_dir, log_args, env)
     return result.returncode
 
 
 def cmd_build(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> int:
-    """Build container images."""
+    """Build container images, injecting extra packages from catalog tools."""
+    claude_home = get_claude_home()
+    extra_packages_file = claude_home / "tools" / "extra-packages.txt"
+
+    # Collect packages from all installed tools
+    tools_dir = get_tools_dir()
+    extra_packages = set()
+    if tools_dir.exists():
+        for tool_dir in tools_dir.iterdir():
+            if not tool_dir.is_dir():
+                continue
+            tool_json = tool_dir / "tool.json"
+            if tool_json.exists():
+                with open(tool_json) as f:
+                    data = json.load(f)
+                for pkg in data.get("packages", []):
+                    extra_packages.add(pkg)
+
+    if extra_packages:
+        print(f"Extra packages to install: {', '.join(sorted(extra_packages))}")
+        env["EXTRA_PACKAGES"] = " ".join(sorted(extra_packages))
+    else:
+        env["EXTRA_PACKAGES"] = ""
+
     print("Building containers...")
-    result = run_docker_compose(repo_dir, ["build"], env)
+    result = run_compose(repo_dir, ["build"], env)
     return result.returncode
 
 
 def cmd_install(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> int:
     """Run the installation script."""
-    install_script = repo_dir / "scripts" / "install.sh"
-    if not install_script.exists():
-        print(f"Error: install.sh not found at {install_script}")
+    # Find install.sh - check multiple locations
+    locations = [
+        repo_dir / "scripts" / "install.sh",
+        Path(__file__).parent.parent.parent / "scripts" / "install.sh",
+    ]
+    for install_script in locations:
+        if install_script.exists():
+            result = subprocess.run(["bash", str(install_script)], cwd=install_script.parent.parent)
+            return result.returncode
+    print("Error: install.sh not found")
+    return 1
+
+
+def cmd_setup(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> int:
+    """One-command bootstrap: install + build + configure API key."""
+    claude_home = get_claude_home()
+
+    print("Claude Container Setup")
+    print("=" * 40)
+    print()
+
+    # Step 1: Check prerequisites
+    print("[1/4] Checking prerequisites...")
+    runtime = find_container_runtime()
+    if not runtime:
+        print("  Error: Podman is not installed.")
+        print("  Install it from: https://podman.io/docs/installation")
         return 1
-    result = subprocess.run(["bash", str(install_script)], cwd=repo_dir)
-    return result.returncode
+    print(f"  Podman: found ({runtime})")
+
+    compose_cmd = find_compose_command()
+    if not compose_cmd:
+        print("  Error: podman-compose is not installed.")
+        print("  Install with: pip install podman-compose")
+        print("    or: brew install podman-compose")
+        return 1
+    print(f"  Compose: found ({' '.join(compose_cmd)})")
+
+    if not check_podman_running():
+        print("  Warning: Podman does not appear to be running.")
+        print("  On macOS, run: podman machine start")
+        print()
+    else:
+        print("  Podman: running")
+    print()
+
+    # Step 2: Run install
+    print("[2/4] Installing to ~/.config/claude-container/...")
+    ret = cmd_install(args, env, repo_dir)
+    if ret != 0:
+        return ret
+    print()
+
+    # Step 3: Configure API key
+    print("[3/4] Configuring API key...")
+    env_file = claude_home / ".env"
+    existing_env = load_env_file(claude_home)
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        print("  ANTHROPIC_API_KEY found in environment.")
+    elif existing_env.get("ANTHROPIC_API_KEY"):
+        print("  ANTHROPIC_API_KEY found in .env file.")
+    else:
+        print("  No ANTHROPIC_API_KEY found.")
+        print(f"  Create {env_file} with:")
+        print(f"    echo 'ANTHROPIC_API_KEY=your_key' > {env_file}")
+        print()
+
+    if os.environ.get("GITHUB_TOKEN"):
+        print("  GITHUB_TOKEN found in environment.")
+    elif existing_env.get("GITHUB_TOKEN"):
+        print("  GITHUB_TOKEN found in .env file.")
+    else:
+        print("  No GITHUB_TOKEN found (optional, needed for authenticated git).")
+    print()
+
+    # Step 4: Build images
+    print("[4/4] Building container images...")
+    # Re-resolve repo_dir after install (it may have been created)
+    try:
+        build_repo_dir = get_repo_dir()
+    except RuntimeError:
+        build_repo_dir = repo_dir
+    result = run_compose(build_repo_dir, ["build"], env)
+    if result.returncode != 0:
+        print("Error: Failed to build images.")
+        return result.returncode
+    print()
+
+    print("Setup complete!")
+    print()
+    print("Quick start:")
+    print("  cd /path/to/your/project")
+    print("  claude-container")
+    print()
+    print("Manage tools:")
+    print("  claude-container tools list")
+    print("  claude-container tools add npm")
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> int:
+    """Run health checks and report status."""
+    claude_home = get_claude_home()
+    all_ok = True
+
+    print("Claude Container Health Check")
+    print("=" * 40)
+    print()
+
+    # Check Podman
+    runtime = find_container_runtime()
+    if runtime:
+        try:
+            result = subprocess.run(
+                [runtime, "--version"], capture_output=True, text=True, timeout=5
+            )
+            version = result.stdout.strip()
+            print(f"  Podman:         OK ({version})")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            print(f"  Podman:         OK ({runtime})")
+    else:
+        print("  Podman:         MISSING")
+        print("    Install from: https://podman.io/docs/installation")
+        all_ok = False
+
+    # Check Podman running
+    if runtime and check_podman_running():
+        print("  Podman running: OK")
+    elif runtime:
+        print("  Podman running: NO")
+        print("    On macOS, run: podman machine start")
+        all_ok = False
+
+    # Check podman-compose
+    compose_cmd = find_compose_command()
+    if compose_cmd:
+        print(f"  Compose:        OK ({' '.join(compose_cmd)})")
+    else:
+        print("  Compose:        MISSING")
+        print("    Install with: pip install podman-compose")
+        all_ok = False
+
+    # Check installation
+    if check_installation(claude_home):
+        print(f"  Installed:      OK ({claude_home})")
+    else:
+        print(f"  Installed:      NO")
+        print("    Run: claude-container setup")
+        all_ok = False
+
+    # Check compose file
+    try:
+        rd = get_repo_dir()
+        if (rd / COMPOSE_FILE).exists():
+            print(f"  Compose file:   OK ({rd / COMPOSE_FILE})")
+        else:
+            print(f"  Compose file:   MISSING ({rd / COMPOSE_FILE})")
+            all_ok = False
+    except RuntimeError:
+        print("  Compose file:   NOT FOUND")
+        all_ok = False
+
+    # Check images
+    if runtime and images_exist(repo_dir, env):
+        print("  Images:         OK (claude-code:v2, tool-server:v2)")
+    else:
+        print("  Images:         NOT BUILT")
+        print("    Run: claude-container build")
+        all_ok = False
+
+    # Check API key
+    env_vars = load_env_file(claude_home)
+    if os.environ.get("ANTHROPIC_API_KEY") or env_vars.get("ANTHROPIC_API_KEY"):
+        print("  API key:        OK")
+    else:
+        print("  API key:        MISSING")
+        print(f"    Set: export ANTHROPIC_API_KEY=your_key")
+        print(f"    Or:  echo 'ANTHROPIC_API_KEY=your_key' > {claude_home / '.env'}")
+        all_ok = False
+
+    # Check GitHub token
+    if os.environ.get("GITHUB_TOKEN") or env_vars.get("GITHUB_TOKEN"):
+        print("  GitHub token:   OK")
+    else:
+        print("  GitHub token:   NOT SET (optional)")
+
+    # Check sockets directory
+    sockets_dir = claude_home / "sockets"
+    if sockets_dir.exists():
+        sockets = list(sockets_dir.glob("*.sock"))
+        print(f"  Sockets dir:    OK ({len(sockets)} active)")
+    else:
+        print("  Sockets dir:    MISSING")
+        all_ok = False
+
+    # Check tools
+    tools_dir = get_tools_dir()
+    if tools_dir.exists():
+        tools = [d.name for d in tools_dir.iterdir() if d.is_dir() and (d / "tool.json").exists()]
+        print(f"  Tools:          {len(tools)} installed ({', '.join(tools) if tools else 'none'})")
+    else:
+        print("  Tools:          NONE")
+
+    print()
+    if all_ok:
+        print("All checks passed.")
+    else:
+        print("Some checks failed. Run 'claude-container setup' to fix.")
+    return 0 if all_ok else 1
 
 
 # Tools management commands
@@ -242,6 +593,7 @@ def get_installed_tools() -> dict:
             tools[tool_dir.name] = {
                 "binary": data.get("binary", ""),
                 "description": data.get("description", ""),
+                "packages": data.get("packages", []),
                 "installed": True,
             }
 
@@ -293,6 +645,24 @@ def cmd_tools_add(args: argparse.Namespace) -> int:
         return add_tool_from_catalog(args.name, tools_dir)
 
 
+def generate_extra_packages_file(tools_dir: Path) -> None:
+    """Generate a file listing all extra packages needed by installed tools."""
+    claude_home = get_claude_home()
+    packages = set()
+    for tool_dir in tools_dir.iterdir():
+        if not tool_dir.is_dir():
+            continue
+        tool_json = tool_dir / "tool.json"
+        if tool_json.exists():
+            with open(tool_json) as f:
+                data = json.load(f)
+            for pkg in data.get("packages", []):
+                packages.add(pkg)
+
+    packages_file = claude_home / "tools" / "extra-packages.txt"
+    packages_file.write_text("\n".join(sorted(packages)) + "\n" if packages else "")
+
+
 def add_tool_from_catalog(name: str, tools_dir: Path) -> int:
     """Add a tool from the built-in catalog."""
     catalog_dir = get_catalog_dir()
@@ -316,6 +686,9 @@ def add_tool_from_catalog(name: str, tools_dir: Path) -> int:
     # Create symlink in bin/
     create_tool_symlink(name)
 
+    # Update extra packages file
+    generate_extra_packages_file(tools_dir)
+
     # Show package installation note
     tool_json = dest_dir / "tool.json"
     if tool_json.exists():
@@ -324,11 +697,8 @@ def add_tool_from_catalog(name: str, tools_dir: Path) -> int:
         packages = data.get("packages", [])
         if packages:
             print()
-            print(f"Note: This tool requires these packages in tool-server container:")
-            print(f"  {', '.join(packages)}")
-            print()
-            print("Add to tool-server/Containerfile and rebuild:")
-            print(f"  RUN apt-get update && apt-get install -y {' '.join(packages)}")
+            print(f"This tool requires packages: {', '.join(packages)}")
+            print("Rebuild to install them:")
             print("  claude-container build")
 
     return 0
@@ -373,6 +743,9 @@ def add_tool_from_url(name: str, url: str, tools_dir: Path) -> int:
     # Create symlink in bin/
     create_tool_symlink(name)
 
+    # Update extra packages file
+    generate_extra_packages_file(tools_dir)
+
     return 0
 
 
@@ -407,6 +780,9 @@ def cmd_tools_remove(args: argparse.Namespace) -> int:
         symlink.unlink()
         print(f"Removed symlink: {args.name}")
 
+    # Update extra packages file
+    generate_extra_packages_file(tools_dir)
+
     return 0
 
 
@@ -418,12 +794,14 @@ def main() -> int:
         epilog="""
 Commands:
   run          Start tool server and run Claude interactively (default)
+  setup        One-command bootstrap: install + build + configure
   start        Start all containers in background
   stop         Stop all containers
   status       Show container status
   logs         View container logs (optionally specify service)
   build        Build container images
   install      Run installation script
+  doctor       Run health checks
   tools list   List available and installed tools
   tools add    Add a tool from catalog or URL
   tools remove Remove an installed tool
@@ -441,6 +819,9 @@ Commands:
 
     # run command (default)
     subparsers.add_parser("run", help="Start tool server and run Claude interactively")
+
+    # setup command
+    subparsers.add_parser("setup", help="One-command bootstrap: install + build + configure")
 
     # start command
     subparsers.add_parser("start", help="Start all containers in background")
@@ -460,6 +841,9 @@ Commands:
 
     # install command
     subparsers.add_parser("install", help="Run installation script")
+
+    # doctor command
+    subparsers.add_parser("doctor", help="Run health checks and report status")
 
     # tools command with subcommands
     tools_parser = subparsers.add_parser("tools", help="Manage tools")
@@ -485,7 +869,7 @@ Commands:
 
     args = parser.parse_args()
 
-    # Handle tools commands separately (they don't need docker setup)
+    # Handle tools commands separately (they don't need container setup)
     if args.command == "tools":
         if args.tools_command == "list":
             return cmd_tools_list(args)
@@ -505,10 +889,13 @@ Commands:
     claude_home = get_claude_home()
     project_dir = args.directory.resolve()
 
-    # Check installation (except for install command)
-    if args.command != "install" and not check_installation(claude_home):
+    # Load .env file early
+    apply_env_file(claude_home)
+
+    # Check installation (except for install/setup/doctor commands)
+    if args.command not in ("install", "setup", "doctor") and not check_installation(claude_home):
         print("Error: Claude Container not installed.")
-        print("Run: claude-container install")
+        print("Run: claude-container setup")
         return 1
 
     # Check for API key (only for run/start commands)
@@ -516,6 +903,7 @@ Commands:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             print("Warning: ANTHROPIC_API_KEY not set")
             print("Claude Code may not work without an API key.")
+            print(f"Set it in environment or in {claude_home / '.env'}")
             print()
 
         if not os.environ.get("GITHUB_TOKEN"):
@@ -540,18 +928,24 @@ Commands:
     try:
         repo_dir = get_repo_dir()
     except RuntimeError as e:
-        print(f"Error: {e}")
-        return 1
+        if args.command == "setup":
+            # For setup, use the package directory as fallback
+            repo_dir = Path(__file__).parent.parent.parent
+        else:
+            print(f"Error: {e}")
+            return 1
 
     # Dispatch to command handler
     commands = {
         "run": cmd_run,
+        "setup": cmd_setup,
         "start": cmd_start,
         "stop": cmd_stop,
         "status": cmd_status,
         "logs": cmd_logs,
         "build": cmd_build,
         "install": cmd_install,
+        "doctor": cmd_doctor,
     }
 
     handler = commands.get(args.command)

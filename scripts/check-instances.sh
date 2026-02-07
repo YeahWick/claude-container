@@ -3,12 +3,13 @@
 #
 # Shows which instance IDs correspond to which project paths,
 # and which containers are currently running.
+# Uses Podman.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude-container}"
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.config/claude-container}"
 
 # Generate instance ID from path (same algorithm as run.sh)
 generate_instance_id() {
@@ -47,7 +48,7 @@ list_running_instances() {
             echo "  Socket:    $CLAUDE_HOME/sockets/tool-$instance_id.sock"
             echo ""
         fi
-    done < <(docker ps --filter "name=claude-" --format "{{.Names}}" 2>/dev/null | grep -E "claude-[a-f0-9]{8}-(claude|tool-server)-1" || true)
+    done < <(podman ps --filter "name=claude-" --format "{{.Names}}" 2>/dev/null | grep -E "claude-[a-f0-9]{8}-(claude|tool-server)-1" || true)
 
     if [ "$found" -eq 0 ]; then
         echo "  (no running instances)"
@@ -105,7 +106,7 @@ check_path() {
     echo ""
 
     # Check if this instance is running
-    if docker ps --filter "name=claude-$instance_id-" --format "{{.Names}}" 2>/dev/null | grep -q .; then
+    if podman ps --filter "name=claude-$instance_id-" --format "{{.Names}}" 2>/dev/null | grep -q .; then
         echo "  Status: RUNNING"
     elif [ -S "$CLAUDE_HOME/sockets/tool-$instance_id.sock" ]; then
         echo "  Status: STALE (socket exists but containers not running)"
