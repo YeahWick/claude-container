@@ -1,4 +1,4 @@
-# Claude Container (Client)
+# Claude Container - Client (built with Podman)
 #
 # Runs Claude Code CLI with tool-client wrappers.
 # This is the CLIENT side — it sends tool commands to the tool server

@@ -1,6 +1,6 @@
 # Claude Container
 
-A minimal container architecture for running Claude Code with controlled access to development tools.
+A minimal container architecture for running Claude Code with controlled access to development tools. Uses Podman for rootless container management.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ A minimal container architecture for running Claude Code with controlled access 
 
 ### Containers
 
-| Container | Purpose | Dockerfile |
+| Container | Purpose | Containerfile |
 |-----------|---------|------------|
 | **claude** (client) | Runs Claude Code CLI with tool-client wrappers | `claude/Containerfile` |
 | **tool-server** | Executes tools with optional restrictions | `tool-server/Containerfile` |
@@ -45,6 +45,8 @@ A minimal container architecture for running Claude Code with controlled access 
 - **Hot-loading** - Tools added after startup are discovered on first use
 - **Concurrent instances** - Multiple projects can run simultaneously
 - **Single mount** - `bin/` and `tools.d/` share one host directory for clean relative symlinks
+- **Auto-build** - Images are built automatically on first run if missing
+- **Environment file** - API keys stored in `~/.config/claude-container/.env`
 
 ## Quick Start
 
@@ -52,15 +54,11 @@ A minimal container architecture for running Claude Code with controlled access 
 # Install CLI via uv
 uv tool install git+https://github.com/YeahWick/claude-container.git
 
-# Run setup (creates ~/.claude-container/)
-claude-container install
+# One-command setup: install + check prerequisites + build images
+claude-container setup
 
-# Set API keys
-export ANTHROPIC_API_KEY=your_key
-export GITHUB_TOKEN=your_token  # optional
-
-# Build containers
-cd ~/.claude-container/repo && docker compose build
+# Set your API key (if not done during setup)
+echo 'ANTHROPIC_API_KEY=your_key' >> ~/.config/claude-container/.env
 
 # Run from any project directory
 cd /path/to/your/project
@@ -73,9 +71,17 @@ claude-container
 git clone https://github.com/YeahWick/claude-container.git
 cd claude-container
 ./scripts/install.sh
-docker compose build
+podman-compose -f podman-compose.yaml build
 ./scripts/run.sh
 ```
+
+### Prerequisites
+
+- [Podman](https://podman.io/docs/installation) (container runtime)
+- [podman-compose](https://github.com/containers/podman-compose) (`pip install podman-compose` or `brew install podman-compose`)
+- On macOS: `podman machine init && podman machine start`
+
+Run `claude-container doctor` to check your setup.
 
 ## Project Setup
 
@@ -109,6 +115,29 @@ npm install
 
 See `examples/project-setup/` for a complete example.
 
+## Configuration
+
+### API Keys
+
+Store your API keys in `~/.config/claude-container/.env`:
+
+```bash
+ANTHROPIC_API_KEY=your_key_here
+GITHUB_TOKEN=your_token_here
+```
+
+The CLI loads this file automatically. Environment variables take precedence over the file.
+
+### Health Check
+
+Run diagnostics to verify your setup:
+
+```bash
+claude-container doctor
+```
+
+This checks: Podman installed/running, podman-compose available, images built, API key configured, sockets directory exists, and installed tools.
+
 ## Managing Tools
 
 ### Adding Tools from Catalog
@@ -123,9 +152,11 @@ claude-container tools list
 claude-container tools add npm
 claude-container tools add python
 
-# Rebuild containers after adding tools (if they need new packages)
+# Rebuild containers to install required packages
 claude-container build
 ```
+
+When you add a catalog tool that requires system packages, `claude-container build` automatically injects them into the tool-server image.
 
 ### Adding Tools from External Repos
 
@@ -148,8 +179,8 @@ claude-container tools remove npm
 Create a directory in `tools.d/` with a `tool.json` manifest:
 
 ```bash
-mkdir -p ~/.claude-container/tools/tools.d/npm
-cat > ~/.claude-container/tools/tools.d/npm/tool.json << 'EOF'
+mkdir -p ~/.config/claude-container/tools/tools.d/npm
+cat > ~/.config/claude-container/tools/tools.d/npm/tool.json << 'EOF'
 {"binary": "/usr/bin/npm", "timeout": 600}
 EOF
 ```
@@ -165,7 +196,7 @@ See `examples/npm-tool/` for a complete example.
 ```
 claude-container/
 ├── pyproject.toml               # Python package config (for uv tool install)
-├── docker-compose.yaml          # Container orchestration
+├── podman-compose.yaml          # Container orchestration
 │
 ├── src/claude_container/        # Python CLI package
 │   ├── __init__.py
@@ -203,7 +234,7 @@ claude-container/
 │   └── project-setup/           # Project setup hook example
 │
 └── scripts/
-    ├── install.sh               # Creates ~/.claude-container/
+    ├── install.sh               # Creates ~/.config/claude-container/
     ├── run.sh                   # Legacy bash script
     └── check-instances.sh       # List running instances
 ```
@@ -213,8 +244,8 @@ claude-container/
 Created by `claude-container install`, mounted into both containers:
 
 ```
-~/.claude-container/
-├── repo/                # Copy of repo (docker-compose.yaml, Containerfiles)
+~/.config/claude-container/
+├── repo/                # Copy of repo (podman-compose.yaml, Containerfiles)
 ├── tools/               # Single mount → /app/tools (read-only)
 │   ├── bin/             # tool-client + relative symlinks
 │   │   ├── tool-client
@@ -224,7 +255,8 @@ Created by `claude-container install`, mounted into both containers:
 │       ├── git/
 │       └── ...
 ├── sockets/             # Unix sockets (one per instance)
-└── config/              # Configuration files
+├── config/              # Configuration files
+└── .env                 # API keys (ANTHROPIC_API_KEY, GITHUB_TOKEN)
 ```
 
 ## Tool Customization
@@ -283,12 +315,14 @@ Socket communication using length-prefixed JSON:
 # Container management
 claude-container              # Start Claude interactively (default)
 claude-container run          # Same as above
+claude-container setup        # One-command bootstrap: install + build + configure
 claude-container start        # Start containers in background
 claude-container stop         # Stop all containers
 claude-container status       # Show container status
 claude-container logs         # View logs
-claude-container build        # Build container images
+claude-container build        # Build container images (with extra packages)
 claude-container install      # Run installation script
+claude-container doctor       # Check prerequisites and configuration
 
 # Tool management
 claude-container tools list   # List available and installed tools

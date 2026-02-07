@@ -3,14 +3,16 @@
 #
 # Starts the Claude client container with the tool server.
 # Supports multiple concurrent instances via unique project names.
+# Uses Podman and podman-compose.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude-container}"
+CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.config/claude-container}"
+COMPOSE_FILE="podman-compose.yaml"
 
-# Export for docker compose
+# Export for podman-compose
 export CLAUDE_HOME
 export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
 
@@ -37,14 +39,22 @@ export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-claude-$INSTANCE_ID}"
 # Check if installed
 if [ ! -d "$CLAUDE_HOME/tools/bin" ]; then
     echo "Error: Claude Container not installed."
-    echo "Run: ./scripts/install.sh"
+    echo "Run: claude-container setup"
     exit 1
+fi
+
+# Load .env file if it exists
+if [ -f "$CLAUDE_HOME/.env" ]; then
+    set -a
+    source "$CLAUDE_HOME/.env"
+    set +a
 fi
 
 # Check for API key
 if [ -z "$ANTHROPIC_API_KEY" ]; then
     echo "Warning: ANTHROPIC_API_KEY not set"
     echo "Claude Code may not work without an API key."
+    echo "Set it in $CLAUDE_HOME/.env or export it."
     echo ""
 fi
 
@@ -69,7 +79,7 @@ case "$ACTION" in
 
         # Start tool server first
         echo "Starting tool server..."
-        docker compose up -d tool-server
+        podman-compose -f "$COMPOSE_FILE" up -d tool-server
 
         # Wait for tool server socket
         echo "Waiting for tool server..."
@@ -83,13 +93,20 @@ case "$ACTION" in
 
         # Check if tool server socket is available
         if [ ! -S "$SOCKET_FILE" ]; then
-            echo "Warning: Tool server socket not ready at $SOCKET_FILE"
-            echo "Check: docker compose logs tool-server"
+            echo "Error: Tool server socket not ready at $SOCKET_FILE"
+            echo ""
+            echo "Tool server logs:"
+            echo "----------------------------------------"
+            podman-compose -f "$COMPOSE_FILE" logs --tail=20 tool-server
+            echo "----------------------------------------"
+            echo ""
+            echo "Try: claude-container logs tool-server"
+            exit 1
         fi
 
         # Start Claude client interactively
         echo "Starting Claude..."
-        docker compose run --rm claude
+        podman-compose -f "$COMPOSE_FILE" run --rm claude
         ;;
 
     start)
@@ -100,10 +117,9 @@ case "$ACTION" in
 
         # Start all containers in background
         echo "Starting all containers..."
-        docker compose up -d
+        podman-compose -f "$COMPOSE_FILE" up -d
         echo ""
-        echo "Containers started. Use 'docker compose logs -f' to view logs."
-        echo "To connect to Claude: docker compose exec claude bash"
+        echo "Containers started. Use 'claude-container logs' to view logs."
         echo "Socket: $CLAUDE_HOME/sockets/tool-$INSTANCE_ID.sock"
         ;;
 
@@ -112,7 +128,7 @@ case "$ACTION" in
         echo "Project:  $COMPOSE_PROJECT_NAME"
         echo ""
         echo "Stopping all containers..."
-        docker compose down
+        podman-compose -f "$COMPOSE_FILE" down
 
         # Clean up instance socket
         SOCKET_FILE="$CLAUDE_HOME/sockets/tool-$INSTANCE_ID.sock"
@@ -127,7 +143,7 @@ case "$ACTION" in
         echo "Project:  $COMPOSE_PROJECT_NAME"
         echo ""
         echo "Container status:"
-        docker compose ps
+        podman-compose -f "$COMPOSE_FILE" ps
         echo ""
         echo "Instance socket:"
         ls -la "$CLAUDE_HOME/sockets/tool-$INSTANCE_ID.sock" 2>/dev/null || echo "  (not found)"
@@ -137,12 +153,12 @@ case "$ACTION" in
         ;;
 
     logs)
-        docker compose logs -f "${2:-}"
+        podman-compose -f "$COMPOSE_FILE" logs -f "${2:-}"
         ;;
 
     build)
         echo "Building containers..."
-        docker compose build
+        podman-compose -f "$COMPOSE_FILE" build
         ;;
 
     *)

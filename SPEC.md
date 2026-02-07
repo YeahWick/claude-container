@@ -153,7 +153,7 @@ The current implementation uses **Option A** with a single tool server that hand
 HOST FILESYSTEM                         CONTAINERS
 ───────────────                         ──────────
 
-~/.claude-container/
+~/.config/claude-container/
 ├── tools/                  ──────────► Both containers: /app/tools (read-only)
 │   ├── bin/                            Claude: /app/tools/bin (in PATH)
 │   │   ├── tool-client
@@ -175,7 +175,7 @@ HOST FILESYSTEM                         CONTAINERS
 └── config/                 ──────────► Configuration files
 ```
 
-### Docker Compose Configuration
+### Podman Compose Configuration
 
 ```yaml
 services:
@@ -183,9 +183,9 @@ services:
     image: claude-code:v2
     volumes:
       # Tools directory - bin/ (client + symlinks) and tools.d/ (definitions)
-      - ${CLAUDE_HOME:-~/.claude-container}/tools:/app/tools:ro
+      - ${CLAUDE_HOME:-~/.config/claude-container}/tools:/app/tools:ro
       # Sockets - read-only access to tool server
-      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/sockets:ro
+      - ${CLAUDE_HOME:-~/.config/claude-container}/sockets:/run/sockets:ro
       # Workspace
       - ${PROJECT_DIR:-.}:/workspace
     environment:
@@ -196,9 +196,9 @@ services:
     image: tool-server:v2
     volumes:
       # Sockets - read-write to create socket file
-      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/sockets:rw
+      - ${CLAUDE_HOME:-~/.config/claude-container}/sockets:/run/sockets:rw
       # Tools directory - for auto-discovery and setup scripts
-      - ${CLAUDE_HOME:-~/.claude-container}/tools:/app/tools:ro
+      - ${CLAUDE_HOME:-~/.config/claude-container}/tools:/app/tools:ro
       # Workspace - same as claude container
       - ${PROJECT_DIR:-.}:/workspace
     environment:
@@ -270,7 +270,7 @@ services:
 claude-container/
 ├── SPEC.md                    # This document
 ├── README.md                  # Quick start guide
-├── docker-compose.yaml        # Container orchestration
+├── podman-compose.yaml        # Container orchestration
 │
 ├── claude/                    # Claude container (client)
 │   ├── Containerfile
@@ -297,12 +297,12 @@ claude-container/
     └── check-instances.sh     # Instance status
 ```
 
-### Host Runtime Directory (~/.claude-container/)
+### Host Runtime Directory (~/.config/claude-container/)
 
 Created by `install.sh`, mounted into containers:
 
 ```
-~/.claude-container/
+~/.config/claude-container/
 ├── tools/                     # Single mount: /app/tools (read-only)
 │   ├── bin/                   # tool-client + relative symlinks
 │   │   ├── tool-client        # Socket client script
@@ -315,7 +315,8 @@ Created by `install.sh`, mounted into containers:
 ├── sockets/                   # Mounted as /run/sockets
 │   └── tool-{id}.sock        # Created by tool server
 │
-└── config/                    # Configuration files
+├── config/                    # Configuration files
+└── .env                       # API keys (loaded by CLI automatically)
 ```
 
 ---
@@ -341,8 +342,14 @@ Created by `install.sh`, mounted into containers:
 
 4. Re-run install and rebuild:
    ```bash
-   ./scripts/install.sh
-   docker compose build tool-server
+   claude-container install
+   claude-container build
+   ```
+
+   Or use the catalog:
+   ```bash
+   claude-container tools add npm
+   claude-container build
    ```
 
 The tool is auto-discovered by the server at startup. Hot-loading also works for tools added after the server is running.

@@ -15,13 +15,13 @@ This is an example tool definition for npm, showing the `tools.d/` format.
 cp -r examples/npm-tool tools.d/npm
 
 # Or copy to host tools directory
-cp -r examples/npm-tool ~/.claude-container/tools.d/npm
+cp -r examples/npm-tool ~/.config/claude-container/tools.d/npm
 
 # Regenerate symlinks
 ./scripts/install.sh
 
 # Rebuild to install npm binary in container
-docker compose build tool-server
+claude-container build
 ```
 
 No code changes needed. The server auto-discovers the tool from `tools.d/npm/`.

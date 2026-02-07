@@ -1,4 +1,4 @@
-# Claude Container - Client/Server Architecture
+# Claude Container - Client/Server Architecture (Podman Compose)
 #
 # This compose file sets up:
 # - claude (client): Runs Claude Code CLI with lightweight tool-client wrappers
@@ -29,9 +29,9 @@ services:
     tty: true
     volumes:
       # Tools directory - contains bin/ (client + symlinks) and tools.d/ (definitions)
-      - ${CLAUDE_HOME:-~/.claude-container}/tools:/app/tools:ro
+      - ${CLAUDE_HOME:-~/.config/claude-container}/tools:/app/tools:ro
       # Sockets - read-only access to tool server socket
-      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/sockets:ro
+      - ${CLAUDE_HOME:-~/.config/claude-container}/sockets:/run/sockets:ro
       # Workspace - project directory
       - ${PROJECT_DIR:-.}:/workspace
     environment:
@@ -49,12 +49,14 @@ services:
     build:
       context: .
       dockerfile: tool-server/Containerfile
+      args:
+        EXTRA_PACKAGES: ${EXTRA_PACKAGES:-}
     image: tool-server:v2
     volumes:
       # Sockets - read-write to create socket
-      - ${CLAUDE_HOME:-~/.claude-container}/sockets:/run/sockets:rw
+      - ${CLAUDE_HOME:-~/.config/claude-container}/sockets:/run/sockets:rw
       # Tools directory - for auto-discovery and setup scripts
-      - ${CLAUDE_HOME:-~/.claude-container}/tools:/app/tools:ro
+      - ${CLAUDE_HOME:-~/.config/claude-container}/tools:/app/tools:ro
       # Workspace - same as claude container
       - ${PROJECT_DIR:-.}:/workspace
     environment:
