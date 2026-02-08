@@ -16,27 +16,44 @@ from pathlib import Path
 COMPOSE_FILE = "podman-compose.yaml"
 
 
+def get_data_dir() -> Path:
+    """Get the directory containing bundled data files.
+
+    In development (running from repo): returns the repo root.
+    When installed from wheel: returns the package's data/ subdirectory.
+    """
+    package_dir = Path(__file__).parent
+    # Dev mode: __file__ is at src/claude_container/cli.py, repo root is ../../
+    repo_root = package_dir.parent.parent
+    if (repo_root / COMPOSE_FILE).exists() and (repo_root / "pyproject.toml").exists():
+        return repo_root
+    # Installed mode: data files are at claude_container/data/
+    data_dir = package_dir / "data"
+    if data_dir.exists() and (data_dir / COMPOSE_FILE).exists():
+        return data_dir
+    raise RuntimeError(
+        "Cannot find bundled data files. "
+        "Expected at repo root or in package data directory."
+    )
+
+
 def get_claude_home() -> Path:
     """Get the Claude Container home directory."""
     return Path(os.environ.get("CLAUDE_HOME", Path.home() / ".config" / "claude-container"))
 
 
 def get_repo_dir() -> Path:
-    """Get the repository directory where podman-compose.yaml lives."""
+    """Get the repository directory where podman-compose.yaml lives.
+
+    Priority:
+    1. CLAUDE_HOME/repo/ (installed by cmd_install)
+    2. Package data directory (bundled in wheel or dev repo root)
+    """
     claude_home = get_claude_home()
-    # The repo is installed at CLAUDE_HOME/repo
     repo_dir = claude_home / "repo"
-    if repo_dir.exists():
+    if repo_dir.exists() and (repo_dir / COMPOSE_FILE).exists():
         return repo_dir
-    # Fallback: check if we're running from the repo itself
-    script_dir = Path(__file__).parent
-    for parent in [script_dir, script_dir.parent, script_dir.parent.parent]:
-        if (parent / COMPOSE_FILE).exists():
-            return parent
-    raise RuntimeError(
-        f"Cannot find {COMPOSE_FILE}. "
-        f"Expected at {repo_dir} or in package directory."
-    )
+    return get_data_dir()
 
 
 def get_catalog_dir() -> Path:
@@ -346,14 +363,18 @@ def cmd_build(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> 
 
 def cmd_install(args: argparse.Namespace, env: dict[str, str], repo_dir: Path) -> int:
     """Run the installation script."""
-    # Find install.sh - check multiple locations
-    locations = [
-        repo_dir / "scripts" / "install.sh",
-        Path(__file__).parent.parent.parent / "scripts" / "install.sh",
-    ]
-    for install_script in locations:
+    # Find install.sh - try bundled data dir first, then repo_dir fallback
+    locations = []
+    try:
+        data_dir = get_data_dir()
+        locations.append((data_dir / "scripts" / "install.sh", data_dir))
+    except RuntimeError:
+        pass
+    locations.append((repo_dir / "scripts" / "install.sh", repo_dir))
+
+    for install_script, cwd in locations:
         if install_script.exists():
-            result = subprocess.run(["bash", str(install_script)], cwd=install_script.parent.parent)
+            result = subprocess.run(["bash", str(install_script)], cwd=str(cwd))
             return result.returncode
     print("Error: install.sh not found")
     return 1
@@ -928,9 +949,13 @@ Commands:
     try:
         repo_dir = get_repo_dir()
     except RuntimeError as e:
-        if args.command == "setup":
-            # For setup, use the package directory as fallback
-            repo_dir = Path(__file__).parent.parent.parent
+        if args.command in ("setup", "install"):
+            # For setup/install, use bundled data directory as fallback
+            try:
+                repo_dir = get_data_dir()
+            except RuntimeError:
+                print(f"Error: {e}")
+                return 1
         else:
             print(f"Error: {e}")
             return 1

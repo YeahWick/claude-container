@@ -27,3 +27,12 @@ claude-container = "claude_container.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claude_container"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"scripts" = "claude_container/data/scripts"
+"client" = "claude_container/data/client"
+"claude" = "claude_container/data/claude"
+"tool-server" = "claude_container/data/tool-server"
+"tools.d" = "claude_container/data/tools.d"
+"catalog" = "claude_container/data/catalog"
+"podman-compose.yaml" = "claude_container/data/podman-compose.yaml"

@@ -95,6 +95,7 @@ echo "Installing repo files..."
 cp "$REPO_DIR"/podman-compose.yaml "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/claude "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/tool-server "$CLAUDE_HOME"/repo/
+cp -r "$REPO_DIR"/tools.d "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/scripts "$CLAUDE_HOME"/repo/
 cp -r "$REPO_DIR"/catalog "$CLAUDE_HOME"/repo/
 
